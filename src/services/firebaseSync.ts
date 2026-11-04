@@ -230,6 +230,18 @@ export async function saveDoseToFirestore(userId: string, dose: InsulinDoseRecor
 }
 
 /**
+ * Deletes an insulin dose record from Firestore
+ */
+export async function deleteDoseFromFirestore(userId: string, doseId: string): Promise<void> {
+  const path = `users/${userId}/doses/${doseId}`;
+  try {
+    await deleteDoc(doc(db, 'users', userId, 'doses', doseId));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, path);
+  }
+}
+
+/**
  * Saves a reminder in Firestore
  */
 export async function saveReminderToFirestore(userId: string, reminder: ReminderItem): Promise<void> {

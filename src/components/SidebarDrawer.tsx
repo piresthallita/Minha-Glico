@@ -22,6 +22,7 @@ import {
   ChevronRight,
   User as UserIcon,
   Trash2,
+  Syringe,
 } from 'lucide-react';
 import { PatientProfile } from '../types';
 import { User } from 'firebase/auth';
@@ -30,6 +31,7 @@ import { PWAInstallButton } from './PWAInstallButton';
 export type AppPageId =
   | 'today'
   | 'glucose'
+  | 'applications'
   | 'meals'
   | 'routine'
   | 'reports'
@@ -192,6 +194,23 @@ export const SidebarDrawer: React.FC<SidebarDrawerProps> = ({
                   <span>Glicemia & Medições</span>
                 </div>
                 <ChevronRight className="w-3.5 h-3.5 opacity-50" />
+              </button>
+
+              <button
+                onClick={() => handleItemClick('applications')}
+                className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-2xl text-xs font-bold transition ${
+                  currentPage === 'applications'
+                    ? 'bg-[#111111] text-white dark:bg-[#FF5A36]'
+                    : 'text-neutral-700 dark:text-neutral-300 hover:bg-[#F6F6F7] dark:hover:bg-[#222226]'
+                }`}
+              >
+                <div className="flex items-center gap-3">
+                  <Syringe className="w-4 h-4 text-[#FF5A36]" />
+                  <span>Aplicações de Insulina</span>
+                </div>
+                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-[#FF5A36]/15 text-[#FF5A36]">
+                  Doses (U)
+                </span>
               </button>
 
               <button
@@ -364,7 +383,7 @@ export const SidebarDrawer: React.FC<SidebarDrawerProps> = ({
               >
                 <div className="flex items-center gap-3">
                   <Settings className="w-4 h-4 text-[#FF5A36]" />
-                  <span>Metas de Tratamento & Alvos</span>
+                  <span>Configurações Gerais & Perfil</span>
                 </div>
                 <ChevronRight className="w-3.5 h-3.5 opacity-50" />
               </button>

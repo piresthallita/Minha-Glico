@@ -39,6 +39,8 @@ import {
   CheckCircle2,
   Droplets,
   Footprints,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react';
 
 import { motion, AnimatePresence } from 'motion/react';
@@ -81,6 +83,7 @@ import {
   getGlucoseContextLabel,
   getGlucoseContextBadgeColor,
   GLUCOSE_MOMENTS,
+  INJECTION_SITES,
 } from './utils/clinicalCalculations';
 
 import {
@@ -99,6 +102,7 @@ import {
   deleteReadingFromFirestore,
   saveMealToFirestore,
   saveDoseToFirestore,
+  deleteDoseFromFirestore,
   saveReminderToFirestore,
   deleteReminderFromFirestore,
   saveWeightToFirestore,
@@ -119,6 +123,7 @@ import { DailyRoutineView } from './components/DailyRoutineView';
 import { ReportsClinicalView } from './components/ReportsClinicalView';
 import { AuthScreen } from './components/AuthScreen';
 import { ResetAllModal } from './components/ResetAllModal';
+import { InsulinApplicationsView } from './components/InsulinApplicationsView';
 
 function toLocalDateTimeInputString(date: Date = new Date()): string {
   const pad = (n: number) => String(n).padStart(2, '0');
@@ -128,6 +133,34 @@ function toLocalDateTimeInputString(date: Date = new Date()): string {
   const hours = pad(date.getHours());
   const minutes = pad(date.getMinutes());
   return `${year}-${month}-${day}T${hours}:${minutes}`;
+}
+
+function getLocalDateKey(date: Date = new Date()): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+function shiftDateKey(dateStr: string, deltaDays: number): string {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const dt = new Date(y, m - 1, d);
+  dt.setDate(dt.getDate() + deltaDays);
+  return getLocalDateKey(dt);
+}
+
+function formatMonitoringDayHeader(dateStr: string): { badge: string; formattedDate: string } {
+  const todayStr = getLocalDateKey(new Date());
+  const yesterdayStr = shiftDateKey(todayStr, -1);
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const dt = new Date(y, m - 1, d);
+  const formattedDate = dt.toLocaleDateString('pt-BR', {
+    weekday: 'short',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+  });
+  if (dateStr === todayStr) return { badge: 'Hoje', formattedDate };
+  if (dateStr === yesterdayStr) return { badge: 'Ontem', formattedDate };
+  return { badge: 'Dia Anterior', formattedDate };
 }
 
 export default function App() {
@@ -348,12 +381,19 @@ export default function App() {
   const [aiNotesForCurrentMeal, setAiNotesForCurrentMeal] = useState('');
   const [glycemicImpactCurrentMeal, setGlycemicImpactCurrentMeal] = useState('');
 
-  // Quick manual reading form
+  // Quick manual reading form + optional post-measurement insulin application
   const [manualBgValue, setManualBgValue] = useState<string>('');
   const [manualDateTime, setManualDateTime] = useState<string>(() => toLocalDateTimeInputString());
   const [manualContext, setManualContext] = useState<GlucoseContext>('jejum');
   const [manualNotes, setManualNotes] = useState('');
   const [manualSymptoms, setManualSymptoms] = useState<string[]>([]);
+  const [manualDidApplyInsulin, setManualDidApplyInsulin] = useState<boolean>(false);
+  const [manualInsulinUnits, setManualInsulinUnits] = useState<string>('');
+  const [manualInsulinType, setManualInsulinType] = useState<'rapid' | 'basal'>('rapid');
+
+  // Selected date filter for Glucose Monitoring & Insulin Applications pages (defaults to Today)
+  const [monitoringDate, setMonitoringDate] = useState<string>(() => getLocalDateKey());
+  const [preselectedReadingForDose, setPreselectedReadingForDose] = useState<string | null>(null);
 
   // Bolus calculator state
   const [bolusCarbsInput, setBolusCarbsInput] = useState<number>(0);
@@ -760,10 +800,10 @@ export default function App() {
   const isHyper = latestReading && latestReading.value > 250;
 
   // Log new glucose reading
-  const handleAddReading = (r: Omit<GlucoseReading, 'id'>) => {
+  const handleAddReading = (r: Omit<GlucoseReading, 'id'>, customId?: string) => {
     const newRecord: GlucoseReading = {
       ...r,
-      id: `reading_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+      id: customId || `reading_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
     };
     setReadings((prev) => {
       const updated = [newRecord, ...prev];
@@ -773,12 +813,92 @@ export default function App() {
       saveReadingToFirestore(currentUser.uid, newRecord);
     }
 
+    // Automatically focus the monitoring date on the day of the reading just added
+    setMonitoringDate(getLocalDateKey(new Date(newRecord.timestamp)));
+
     if (newRecord.value < 70) {
       playEmergencyAlertSound('hypo');
       setIsHypoModalOpen(true);
     } else if (newRecord.value > 250) {
       playEmergencyAlertSound('hyper');
     }
+    return newRecord;
+  };
+
+  // Register an insulin application (from the Aplicações page) and optionally link to a reading
+  const handleAddDoseFromApplications = (
+    doseData: Omit<InsulinDoseRecord, 'id'>,
+    linkedReadingId?: string
+  ) => {
+    const doseId = `dose_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+    const newDose: InsulinDoseRecord = {
+      ...doseData,
+      id: doseId,
+    };
+
+    setDoses((prev) => [newDose, ...prev]);
+    if (currentUser) {
+      saveDoseToFirestore(currentUser.uid, newDose);
+    }
+
+    // If linked to a glucose reading, update that reading with the applied insulin info
+    if (linkedReadingId) {
+      setReadings((prev) =>
+        prev.map((r) => {
+          if (r.id === linkedReadingId) {
+            const updatedReading: GlucoseReading = {
+              ...r,
+              insulinUnitsApplied: doseData.units,
+              insulinTypeApplied: doseData.type,
+              insulinNameApplied: doseData.insulinName,
+              linkedDoseId: doseId,
+            };
+            if (currentUser) {
+              saveReadingToFirestore(currentUser.uid, updatedReading);
+            }
+            return updatedReading;
+          }
+          return r;
+        })
+      );
+    }
+
+    const nextRec = getNextRecommendedSite([newDose, ...doses]);
+    setSelectedSite(nextRec.site.id);
+
+    triggerToast(
+      'Aplicação Registrada!',
+      `Aplicação de ${doseData.units}U (${doseData.insulinName}) salva no histórico.`
+    );
+  };
+
+  // Delete an insulin application and unlink from any associated reading
+  const handleDeleteDose = (doseId: string) => {
+    setDoses((prev) => prev.filter((d) => d.id !== doseId));
+    if (currentUser) {
+      deleteDoseFromFirestore(currentUser.uid, doseId);
+    }
+
+    setReadings((prev) =>
+      prev.map((r) => {
+        if (r.linkedDoseId === doseId) {
+          const updatedReading: GlucoseReading = {
+            ...r,
+            insulinUnitsApplied: undefined,
+            insulinTypeApplied: undefined,
+            insulinNameApplied: undefined,
+            linkedDoseId: undefined,
+          };
+          if (currentUser) {
+            saveReadingToFirestore(currentUser.uid, updatedReading);
+          }
+          return updatedReading;
+        }
+        return r;
+      })
+    );
+
+    triggerToast('Aplicação Removida', 'O registro de aplicação foi excluído.');
   };
 
   const handleManualReadingSubmit = (e: React.FormEvent) => {
@@ -789,19 +909,63 @@ export default function App() {
     const parsedDate = manualDateTime ? new Date(manualDateTime) : new Date();
     const finalTimestamp = isNaN(parsedDate.getTime()) ? new Date().toISOString() : parsedDate.toISOString();
 
-    handleAddReading({
-      timestamp: finalTimestamp,
-      value: val,
-      source: 'manual',
-      deviceName: 'Glicosímetro Manual',
-      context: manualContext,
-      notes: manualNotes,
-      symptoms: manualSymptoms,
-    });
+    const readingId = `reading_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const appliedUnits = manualDidApplyInsulin ? parseFloat(manualInsulinUnits) : 0;
+    const hasValidDose = manualDidApplyInsulin && appliedUnits > 0;
+    const doseId = hasValidDose ? `dose_${Date.now()}_${Math.random().toString(36).substring(2, 6)}` : undefined;
+    const insulinName =
+      manualInsulinType === 'rapid' ? profile.rapidInsulinName : profile.basalInsulinName;
+
+    handleAddReading(
+      {
+        timestamp: finalTimestamp,
+        value: val,
+        source: 'manual',
+        deviceName: 'Glicosímetro Manual',
+        context: manualContext,
+        notes: manualNotes,
+        symptoms: manualSymptoms,
+        insulinUnitsApplied: hasValidDose ? appliedUnits : undefined,
+        insulinTypeApplied: hasValidDose ? manualInsulinType : undefined,
+        insulinNameApplied: hasValidDose ? insulinName : undefined,
+        linkedDoseId: doseId,
+      },
+      readingId
+    );
+
+    if (hasValidDose && doseId) {
+      const newDose: InsulinDoseRecord = {
+        id: doseId,
+        timestamp: finalTimestamp,
+        type: manualInsulinType,
+        insulinName,
+        units: appliedUnits,
+        bgAtTime: val,
+        injectionSite: selectedSite,
+        notes: manualNotes || `Aplicação registrada após medição (${getGlucoseContextLabel(manualContext)})`,
+        linkedReadingId: readingId,
+        context: manualContext,
+      };
+      setDoses((prev) => [newDose, ...prev]);
+      if (currentUser) {
+        saveDoseToFirestore(currentUser.uid, newDose);
+      }
+      const nextRec = getNextRecommendedSite([newDose, ...doses]);
+      setSelectedSite(nextRec.site.id);
+
+      triggerToast(
+        'Medição + Aplicação Salvas!',
+        `Glicemia ${val} mg/dL com aplicação de ${appliedUnits}U (${insulinName}) registrada.`
+      );
+    } else {
+      triggerToast('Medição Registrada!', `Glicemia de ${val} mg/dL salva (sem aplicação de insulina).`);
+    }
 
     setManualBgValue('');
     setManualNotes('');
     setManualSymptoms([]);
+    setManualDidApplyInsulin(false);
+    setManualInsulinUnits('');
     setManualDateTime(toLocalDateTimeInputString());
     setIsManualReadingModalOpen(false);
   };
@@ -1068,6 +1232,7 @@ export default function App() {
             {[
               { id: 'today', label: 'Hoje' },
               { id: 'glucose', label: 'Glicemia' },
+              { id: 'applications', label: 'Aplicações' },
               { id: 'meals', label: 'Refeições' },
               { id: 'routine', label: 'Rotina' },
               { id: 'reports', label: 'Relatórios' },
@@ -1075,7 +1240,12 @@ export default function App() {
             ].map((tab) => (
               <button
                 key={tab.id}
-                onClick={() => setActivePage(tab.id as AppPageId)}
+                onClick={() => {
+                  if (tab.id === 'glucose') {
+                    setMonitoringDate(getLocalDateKey());
+                  }
+                  setActivePage(tab.id as AppPageId);
+                }}
                 className={`px-3.5 py-1.5 rounded-full text-xs font-semibold transition whitespace-nowrap ${
                   activePage === tab.id
                     ? 'bg-[#111111] dark:bg-[#FF5A36] text-white'
@@ -2042,191 +2212,385 @@ export default function App() {
           )}
 
           {/* ============================================================== */}
-          {/* TAB 2: GLICOSE & DISPOSITIVOS                                  */}
           {/* ============================================================== */}
-          {activeTab === 'glucose' && (
+          {/* TAB 2: GLICOSE & DISPOSITIVOS (FILTRADO POR DIA, CIMA P/ BAIXO) */}
+          {/* ============================================================== */}
+          {activeTab === 'glucose' && (() => {
+            const todayKey = getLocalDateKey(new Date());
+            const isViewingToday = monitoringDate === todayKey;
+            const { badge: dayBadge, formattedDate: dayFormatted } = formatMonitoringDayHeader(monitoringDate);
+
+            // Filter readings by the selected day AND sort top-to-bottom (earliest of the day on top, next below the last)
+            const dayReadingsAsc = readings
+              .filter((r) => getLocalDateKey(new Date(r.timestamp)) === monitoringDate)
+              .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+
+            return (
+              <motion.div
+                key="glucose"
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -8 }}
+                transition={{ duration: 0.18, ease: 'easeOut' }}
+                className="space-y-4"
+              >
+                {/* Header */}
+                <div className="bg-white dark:bg-[#161619] p-5 rounded-[28px] shadow-[0_4px_24px_rgba(0,0,0,0.03)] flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <h4 className="font-bold text-base text-[#111111] dark:text-white">
+                      Monitoramento Diário de Glicose
+                    </h4>
+                    <p className="text-xs text-neutral-500 dark:text-neutral-400">
+                      Medições organizadas por dia, de cima para baixo (da 1ª à última do dia), com registro de aplicação
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      onClick={() => setActivePage('applications')}
+                      className="px-4 py-2 bg-[#F6F6F7] dark:bg-[#222226] hover:bg-[#111111] hover:text-white dark:hover:bg-[#FF5A36] text-[#111111] dark:text-white text-xs font-bold rounded-full flex items-center gap-1.5 transition"
+                    >
+                      <Syringe className="w-3.5 h-3.5 text-[#FF5A36]" />
+                      <span>Aplicações de Insulina</span>
+                    </button>
+                    <button
+                      onClick={() => setIsBluetoothModalOpen(true)}
+                      className="px-4 py-2 bg-[#111111] dark:bg-[#222226] text-white text-xs font-semibold rounded-full flex items-center gap-1.5"
+                    >
+                      <Radio className="w-3.5 h-3.5 text-[#FF5A36]" />
+                      <span>Sensor BLE/NFC</span>
+                    </button>
+                    <button
+                      onClick={() => setIsManualReadingModalOpen(true)}
+                      className="px-4 py-2 bg-[#FF5A36] hover:bg-[#e84c29] text-white text-xs font-bold rounded-full flex items-center gap-1.5"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>Nova Medição</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Day Filter Navigator Bar (Defaults to Today, allows stepping back to previous days) */}
+                <div className="bg-white dark:bg-[#161619] rounded-[28px] p-4 sm:px-6 shadow-[0_4px_24px_rgba(0,0,0,0.03)] flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <button
+                      type="button"
+                      onClick={() => setMonitoringDate(shiftDateKey(monitoringDate, -1))}
+                      className="px-3.5 py-2 rounded-full bg-[#F6F6F7] dark:bg-[#222226] hover:bg-[#111111] hover:text-white dark:hover:bg-[#FF5A36] text-xs font-bold flex items-center gap-1 transition"
+                      title="Voltar para o dia anterior"
+                    >
+                      <ChevronLeft className="w-4 h-4" />
+                      <span>Dia Anterior</span>
+                    </button>
+
+                    <div className="flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-[#F6F6F7] dark:bg-[#222226]">
+                      <Calendar className="w-3.5 h-3.5 text-[#FF5A36]" />
+                      <span className="px-2 py-0.5 rounded-full bg-[#FF5A36] text-white text-[10px] font-extrabold uppercase">
+                        {dayBadge}
+                      </span>
+                      <input
+                        type="date"
+                        value={monitoringDate}
+                        max={todayKey}
+                        onChange={(e) => {
+                          if (e.target.value) setMonitoringDate(e.target.value);
+                        }}
+                        className="bg-transparent text-xs font-mono font-bold text-[#111111] dark:text-white focus:outline-hidden cursor-pointer"
+                      />
+                    </div>
+
+                    <button
+                      type="button"
+                      disabled={isViewingToday}
+                      onClick={() => setMonitoringDate(shiftDateKey(monitoringDate, 1))}
+                      className="px-3.5 py-2 rounded-full bg-[#F6F6F7] dark:bg-[#222226] hover:bg-[#111111] hover:text-white dark:hover:bg-[#FF5A36] disabled:opacity-35 disabled:pointer-events-none text-xs font-bold flex items-center gap-1 transition"
+                      title="Avançar para o próximo dia"
+                    >
+                      <span>Próximo Dia</span>
+                      <ChevronRight className="w-4 h-4" />
+                    </button>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    {!isViewingToday && (
+                      <button
+                        type="button"
+                        onClick={() => setMonitoringDate(todayKey)}
+                        className="px-3.5 py-1.5 rounded-full bg-[#FF5A36] text-white text-xs font-bold transition shadow-xs"
+                      >
+                        Voltar para Hoje
+                      </button>
+                    )}
+                    <span className="px-3 py-1 rounded-full bg-[#F6F6F7] dark:bg-[#222226] text-[11px] font-mono font-bold text-[#111111] dark:text-white">
+                      {dayReadingsAsc.length} {dayReadingsAsc.length === 1 ? 'medição no dia' : 'medições no dia'}
+                    </span>
+                  </div>
+                </div>
+
+                {dayReadingsAsc.length === 0 ? (
+                  <div className="bg-white dark:bg-[#161619] rounded-[28px] p-8 text-center shadow-[0_4px_24px_rgba(0,0,0,0.03)] space-y-3">
+                    <div className="w-12 h-12 rounded-2xl bg-[#FF5A36]/15 text-[#FF5A36] flex items-center justify-center mx-auto">
+                      <Droplet className="w-6 h-6" />
+                    </div>
+                    <div className="space-y-1">
+                      <h5 className="font-bold text-sm text-[#111111] dark:text-white">
+                        Nenhuma medição registrada em {isViewingToday ? 'Hoje' : dayFormatted}
+                      </h5>
+                      <p className="text-xs text-neutral-400 max-w-md mx-auto">
+                        Registre sua primeira medição do dia. As medições aparecerão de cima para baixo na ordem em que forem feitas.
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => setIsManualReadingModalOpen(true)}
+                      className="px-5 py-2.5 bg-[#FF5A36] hover:bg-[#e84c29] text-white text-xs font-bold rounded-full inline-flex items-center gap-1.5 shadow-xs transition"
+                    >
+                      <Plus className="w-4 h-4" />
+                      <span>Registrar Medição Agora</span>
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    {/* Mobile View: Vertical Compact Cards (Top to Bottom: 1st of the day at top) */}
+                    <div className="block sm:hidden space-y-2.5">
+                      {dayReadingsAsc.map((r, idx) => {
+                        const matchedDose = r.linkedDoseId
+                          ? doses.find((d) => d.id === r.linkedDoseId)
+                          : doses.find((d) => d.linkedReadingId === r.id);
+                        const appliedUnits = r.insulinUnitsApplied ?? matchedDose?.units;
+                        const appliedName =
+                          r.insulinNameApplied ??
+                          matchedDose?.insulinName ??
+                          (r.insulinTypeApplied === 'basal'
+                            ? profile.basalInsulinName
+                            : profile.rapidInsulinName);
+
+                        return (
+                          <div
+                            key={r.id}
+                            className="bg-white dark:bg-[#161619] rounded-3xl p-4 shadow-[0_4px_20px_rgba(0,0,0,0.03)] space-y-2.5"
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="flex items-center gap-2.5 min-w-0">
+                                {/* Número de Ordem no Dia (1ª em cima, próxima abaixo) */}
+                                <span className="w-6 h-6 rounded-full bg-[#111111] dark:bg-white text-white dark:text-[#111111] font-mono text-[11px] font-extrabold flex items-center justify-center shrink-0">
+                                  {idx + 1}ª
+                                </span>
+
+                                <div className="px-3 py-1.5 rounded-full bg-[#F6F6F7] dark:bg-[#222226] font-mono text-xs font-extrabold shrink-0">
+                                  <span className="text-[#FF5A36] mr-0.5">mg</span>
+                                  <span className="text-[#111111] dark:text-white">{r.value}</span>
+                                </div>
+
+                                <div className="min-w-0">
+                                  <div className="flex items-center gap-1.5 flex-wrap">
+                                    <span className="text-xs font-bold text-[#111111] dark:text-white">
+                                      {getGlucoseContextLabel(r.context)}
+                                    </span>
+                                  </div>
+                                  <div className="flex items-center gap-1.5 text-[11px] text-neutral-400 mt-0.5 font-mono">
+                                    <span>
+                                      {new Date(r.timestamp).toLocaleTimeString([], {
+                                        hour: '2-digit',
+                                        minute: '2-digit',
+                                      })}
+                                    </span>
+                                    <span>·</span>
+                                    <span className="truncate max-w-[100px]">{r.deviceName || r.source}</span>
+                                  </div>
+                                </div>
+                              </div>
+
+                              <button
+                                onClick={() => {
+                                  setReadings(readings.filter((it) => it.id !== r.id));
+                                  if (currentUser) deleteReadingFromFirestore(currentUser.uid, r.id);
+                                }}
+                                className="text-neutral-400 hover:text-red-600 p-2 rounded-full shrink-0"
+                                title="Excluir"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </div>
+
+                            {/* Status da Aplicação de Insulina nesta medição */}
+                            <div className="pt-2 border-t border-neutral-100 dark:border-neutral-800 flex items-center justify-between gap-2 text-xs">
+                              {appliedUnits && appliedUnits > 0 ? (
+                                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#FF5A36]/15 text-[#FF5A36] font-bold text-[11px]">
+                                  <Syringe className="w-3 h-3" />
+                                  <span>
+                                    Aplicou <strong>{appliedUnits}U</strong> ({appliedName})
+                                  </span>
+                                </span>
+                              ) : (
+                                <span className="text-[11px] text-neutral-400 font-medium">
+                                  Sem aplicação registrada
+                                </span>
+                              )}
+
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setPreselectedReadingForDose(r.id);
+                                  setActivePage('applications');
+                                }}
+                                className="text-[11px] font-bold text-[#FF5A36] hover:underline flex items-center gap-1"
+                              >
+                                <Syringe className="w-3 h-3" />
+                                <span>{appliedUnits ? 'Editar / Nova Dose' : '+ Registrar Aplicação'}</span>
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {/* Desktop / Tablet View: Full Table (Top to Bottom: 1st of the day at top) */}
+                    <div className="hidden sm:block bg-white dark:bg-[#161619] rounded-[28px] overflow-hidden shadow-[0_4px_24px_rgba(0,0,0,0.03)] p-2">
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left text-xs">
+                          <thead className="text-neutral-400 font-semibold border-b border-neutral-100 dark:border-neutral-800">
+                            <tr>
+                              <th className="p-3.5">Ordem & Horário</th>
+                              <th className="p-3.5">Glicose</th>
+                              <th className="p-3.5">Momento</th>
+                              <th className="p-3.5">Aplicação de Insulina</th>
+                              <th className="p-3.5">Observações / Fonte</th>
+                              <th className="p-3.5 text-right">Ação</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800/60">
+                            {dayReadingsAsc.map((r, idx) => {
+                              const matchedDose = r.linkedDoseId
+                                ? doses.find((d) => d.id === r.linkedDoseId)
+                                : doses.find((d) => d.linkedReadingId === r.id);
+                              const appliedUnits = r.insulinUnitsApplied ?? matchedDose?.units;
+                              const appliedName =
+                                r.insulinNameApplied ??
+                                matchedDose?.insulinName ??
+                                (r.insulinTypeApplied === 'basal'
+                                  ? profile.basalInsulinName
+                                  : profile.rapidInsulinName);
+
+                              return (
+                                <tr
+                                  key={r.id}
+                                  className="hover:bg-[#F6F6F7] dark:hover:bg-[#202024] transition-colors"
+                                >
+                                  <td className="p-3.5 font-mono text-neutral-600 dark:text-neutral-300 tabular-nums">
+                                    <div className="flex items-center gap-2.5">
+                                      <span className="w-6 h-6 rounded-full bg-[#111111] dark:bg-white text-white dark:text-[#111111] text-[10px] font-extrabold flex items-center justify-center shrink-0">
+                                        {idx + 1}ª
+                                      </span>
+                                      <div>
+                                        <span className="font-bold text-[#111111] dark:text-white">
+                                          {new Date(r.timestamp).toLocaleTimeString([], {
+                                            hour: '2-digit',
+                                            minute: '2-digit',
+                                          })}
+                                        </span>
+                                        <span className="text-[10px] text-neutral-400 block">
+                                          {new Date(r.timestamp).toLocaleDateString('pt-BR', {
+                                            day: '2-digit',
+                                            month: '2-digit',
+                                            year: 'numeric',
+                                          })}
+                                        </span>
+                                      </div>
+                                    </div>
+                                  </td>
+                                  <td className="p-3.5">
+                                    <span className="font-mono text-sm font-extrabold text-[#111111] dark:text-white tabular-nums">
+                                      <span className="text-[#FF5A36] text-xs mr-1">mg/dL</span>
+                                      {r.value}
+                                    </span>
+                                  </td>
+                                  <td className="p-3.5">
+                                    <span
+                                      className={`text-[11px] font-bold px-2.5 py-1 rounded-full ${getGlucoseContextBadgeColor(
+                                        r.context
+                                      )}`}
+                                    >
+                                      {getGlucoseContextLabel(r.context)}
+                                    </span>
+                                  </td>
+                                  <td className="p-3.5">
+                                    {appliedUnits && appliedUnits > 0 ? (
+                                      <div className="flex items-center gap-2">
+                                        <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#FF5A36]/15 text-[#FF5A36] font-mono font-extrabold text-xs">
+                                          💉 Aplicou {appliedUnits}U
+                                        </span>
+                                        <span className="text-[11px] text-neutral-500 truncate max-w-[120px]">
+                                          {appliedName}
+                                        </span>
+                                      </div>
+                                    ) : (
+                                      <div className="flex items-center gap-2">
+                                        <span className="text-[11px] text-neutral-400">
+                                          Não aplicou
+                                        </span>
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            setPreselectedReadingForDose(r.id);
+                                            setActivePage('applications');
+                                          }}
+                                          className="px-2.5 py-1 rounded-full bg-[#F6F6F7] dark:bg-[#222226] hover:bg-[#FF5A36] hover:text-white text-[10px] font-bold text-[#FF5A36] transition"
+                                        >
+                                          + Aplicar
+                                        </button>
+                                      </div>
+                                    )}
+                                  </td>
+                                  <td className="p-3.5 text-neutral-500 dark:text-neutral-400 truncate max-w-[160px]">
+                                    {r.notes || r.deviceName || r.source}
+                                  </td>
+                                  <td className="p-3.5 text-right">
+                                    <button
+                                      onClick={() => {
+                                        setReadings(readings.filter((it) => it.id !== r.id));
+                                        if (currentUser) deleteReadingFromFirestore(currentUser.uid, r.id);
+                                      }}
+                                      className="text-neutral-400 hover:text-red-600 p-1.5 rounded-full"
+                                      title="Excluir medição"
+                                    >
+                                      <Trash2 className="w-4 h-4" />
+                                    </button>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </>
+                )}
+              </motion.div>
+            );
+          })()}
+
+          {/* ============================================================== */}
+          {/* PÁGINA: CADASTRO & MONITORAMENTO DE APLICAÇÕES DE INSULINA     */}
+          {/* ============================================================== */}
+          {activePage === 'applications' && (
             <motion.div
-              key="glucose"
+              key="applications"
               initial={{ opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -8 }}
               transition={{ duration: 0.18, ease: 'easeOut' }}
-              className="space-y-4"
             >
-              <div className="bg-white dark:bg-[#161619] p-5 rounded-[28px] shadow-[0_4px_24px_rgba(0,0,0,0.03)] flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <h4 className="font-bold text-base text-[#111111] dark:text-white">
-                    Monitoramento de Glicose
-                  </h4>
-                  <p className="text-xs text-neutral-500 dark:text-neutral-400">
-                    Histórico capilar, Bluetooth e sensores contínuos CGM
-                  </p>
-                </div>
-                <div className="flex gap-2">
-                  <button
-                    onClick={() => setIsBluetoothModalOpen(true)}
-                    className="px-4 py-2 bg-[#111111] dark:bg-[#222226] text-white text-xs font-semibold rounded-full flex items-center gap-1.5"
-                  >
-                    <Radio className="w-3.5 h-3.5 text-[#FF5A36]" />
-                    <span>Sensor BLE/NFC</span>
-                  </button>
-                  <button
-                    onClick={() => setIsManualReadingModalOpen(true)}
-                    className="px-4 py-2 bg-[#FF5A36] hover:bg-[#e84c29] text-white text-xs font-bold rounded-full flex items-center gap-1.5"
-                  >
-                    <Plus className="w-3.5 h-3.5" />
-                    <span>Nova Medição</span>
-                  </button>
-                </div>
-              </div>
-
-              {/* Mobile View: Vertical Compact Cards with Zero Lateral Scroll */}
-              <div className="block sm:hidden space-y-2.5">
-                {readings.slice(0, 15).map((r) => (
-                  <div
-                    key={r.id}
-                    className="bg-white dark:bg-[#161619] rounded-3xl p-4 shadow-[0_4px_20px_rgba(0,0,0,0.03)] flex items-center justify-between gap-2"
-                  >
-                    <div className="flex items-center gap-3 min-w-0">
-                      <div className="px-3 py-1.5 rounded-full bg-[#F6F6F7] dark:bg-[#222226] font-mono text-xs font-extrabold shrink-0">
-                        <span className="text-[#FF5A36] mr-0.5">mg</span>
-                        <span className="text-[#111111] dark:text-white">{r.value}</span>
-                      </div>
-
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-1.5 flex-wrap">
-                          <span className="text-xs font-bold text-[#111111] dark:text-white">
-                            {getGlucoseContextLabel(r.context)}
-                          </span>
-                          {r.trendArrow && (
-                            <span className="text-xs font-bold text-[#FF5A36]">
-                              {r.trendArrow === 'rise'
-                                ? '↗'
-                                : r.trendArrow === 'rapid_rise'
-                                ? '↑'
-                                : r.trendArrow === 'fall'
-                                ? '↘'
-                                : '→'}
-                            </span>
-                          )}
-                        </div>
-                        <div className="flex items-center gap-1.5 text-[11px] text-neutral-400 mt-0.5 font-mono">
-                          <span>
-                            {new Date(r.timestamp).toLocaleDateString([], {
-                              day: '2-digit',
-                              month: '2-digit',
-                            })}
-                          </span>
-                          <span>·</span>
-                          <span>
-                            {new Date(r.timestamp).toLocaleTimeString([], {
-                              hour: '2-digit',
-                              minute: '2-digit',
-                            })}
-                          </span>
-                          <span>·</span>
-                          <span className="truncate max-w-[90px]">{r.deviceName || r.source}</span>
-                        </div>
-                      </div>
-                    </div>
-
-                    <button
-                      onClick={() => {
-                        setReadings(readings.filter((it) => it.id !== r.id));
-                        if (currentUser) deleteReadingFromFirestore(currentUser.uid, r.id);
-                      }}
-                      className="text-neutral-400 hover:text-red-600 p-2 rounded-full shrink-0"
-                      title="Excluir"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  </div>
-                ))}
-              </div>
-
-              {/* Desktop / Tablet View: Full Table */}
-              <div className="hidden sm:block bg-white dark:bg-[#161619] rounded-[28px] overflow-hidden shadow-[0_4px_24px_rgba(0,0,0,0.03)] p-2">
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left text-xs">
-                    <thead className="text-neutral-400 font-semibold border-b border-neutral-100 dark:border-neutral-800">
-                      <tr>
-                        <th className="p-3.5">Data & Horário</th>
-                        <th className="p-3.5">Glicose</th>
-                        <th className="p-3.5">Momento</th>
-                        <th className="p-3.5">Dispositivo</th>
-                        <th className="p-3.5">Tendência</th>
-                        <th className="p-3.5 text-right">Ação</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800/60">
-                      {readings.slice(0, 15).map((r) => (
-                        <tr
-                          key={r.id}
-                          className="hover:bg-[#F6F6F7] dark:hover:bg-[#202024] transition-colors"
-                        >
-                          <td className="p-3.5 font-mono text-neutral-600 dark:text-neutral-300 tabular-nums">
-                            {new Date(r.timestamp).toLocaleTimeString([], {
-                              hour: '2-digit',
-                              minute: '2-digit',
-                            })}
-                            <span className="text-[10px] text-neutral-400 block">
-                              {new Date(r.timestamp).toLocaleDateString([], {
-                                day: '2-digit',
-                                month: '2-digit',
-                                year: 'numeric',
-                              })}
-                            </span>
-                          </td>
-                          <td className="p-3.5">
-                            <span className="font-mono text-sm font-extrabold text-[#111111] dark:text-white tabular-nums">
-                              <span className="text-[#FF5A36] text-xs mr-1">mg/dL</span>
-                              {r.value}
-                            </span>
-                          </td>
-                          <td className="p-3.5">
-                            <span
-                              className={`text-[11px] font-bold px-2.5 py-1 rounded-full ${getGlucoseContextBadgeColor(
-                                r.context
-                              )}`}
-                            >
-                              {getGlucoseContextLabel(r.context)}
-                            </span>
-                          </td>
-                          <td className="p-3.5 text-neutral-500 dark:text-neutral-400 truncate max-w-[140px]">
-                            {r.deviceName || r.source}
-                          </td>
-                          <td className="p-3.5">
-                            {r.trendArrow ? (
-                              <span className="font-semibold text-[11px]">
-                                {r.trendArrow === 'rise'
-                                  ? '↗ Subindo'
-                                  : r.trendArrow === 'rapid_rise'
-                                  ? '↑ Rápida'
-                                  : r.trendArrow === 'fall'
-                                  ? '↘ Descendo'
-                                  : '→ Estável'}
-                              </span>
-                            ) : (
-                              '—'
-                            )}
-                          </td>
-                          <td className="p-3.5 text-right">
-                            <button
-                              onClick={() => {
-                                setReadings(readings.filter((it) => it.id !== r.id));
-                                if (currentUser) deleteReadingFromFirestore(currentUser.uid, r.id);
-                              }}
-                              className="text-neutral-400 hover:text-red-600 p-1.5 rounded-full"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
+              <InsulinApplicationsView
+                doses={doses}
+                readings={readings}
+                profile={profile}
+                selectedDate={monitoringDate}
+                onSelectDate={(d) => setMonitoringDate(d)}
+                onAddDose={handleAddDoseFromApplications}
+                onDeleteDose={handleDeleteDose}
+                onOpenRotationMap={() => setActivePage('rotation')}
+                preselectedReadingId={preselectedReadingForDose}
+                onClearPreselectedReading={() => setPreselectedReadingForDose(null)}
+              />
             </motion.div>
           )}
 
@@ -3171,13 +3535,18 @@ export default function App() {
             >
               <div className="bg-white dark:bg-[#161619] rounded-[28px] p-5 sm:p-6 shadow-[0_4px_24px_rgba(0,0,0,0.03)] space-y-4">
                 <div className="flex items-center justify-between pb-3 border-b border-neutral-100 dark:border-neutral-800">
-                  <div>
-                    <h3 className="font-extrabold text-base text-[#111111] dark:text-white">
-                      Parâmetros Clínicos do Tratamento
-                    </h3>
-                    <p className="text-xs text-neutral-500">
-                      Configure suas metas glicêmicas, ISF e relação carbo-insulina
-                    </p>
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-9 h-9 rounded-full bg-[#FF5A36]/15 text-[#FF5A36] flex items-center justify-center font-bold shrink-0">
+                      <Settings className="w-4.5 h-4.5" />
+                    </div>
+                    <div>
+                      <h3 className="font-extrabold text-base sm:text-lg text-[#111111] dark:text-white tracking-tight">
+                        Configurações Gerais & Tratamento
+                      </h3>
+                      <p className="text-xs text-neutral-500 dark:text-neutral-400">
+                        Gerencie suas metas de glicemia, parâmetros de insulina, backup e redefinição total
+                      </p>
+                    </div>
                   </div>
                 </div>
 
@@ -3602,6 +3971,116 @@ export default function App() {
                 </div>
               </div>
 
+              {/* Opção de Aplicação de Insulina logo após medir */}
+              <div className="p-3.5 rounded-2xl bg-[#F6F6F7] dark:bg-[#222226] space-y-3">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-bold text-[#111111] dark:text-white flex items-center gap-1.5">
+                    <Syringe className="w-3.5 h-3.5 text-[#FF5A36]" />
+                    <span>Aplicou insulina após esta medição?</span>
+                  </label>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setManualDidApplyInsulin(false);
+                      setManualInsulinUnits('');
+                    }}
+                    className={`py-2 px-3 rounded-xl text-xs font-bold transition ${
+                      !manualDidApplyInsulin
+                        ? 'bg-[#111111] dark:bg-white text-white dark:text-[#111111] shadow-xs'
+                        : 'bg-white dark:bg-[#161619] text-neutral-600 dark:text-neutral-300'
+                    }`}
+                  >
+                    Não apliquei
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setManualDidApplyInsulin(true)}
+                    className={`py-2 px-3 rounded-xl text-xs font-bold transition ${
+                      manualDidApplyInsulin
+                        ? 'bg-[#FF5A36] text-white shadow-xs'
+                        : 'bg-white dark:bg-[#161619] text-neutral-600 dark:text-neutral-300'
+                    }`}
+                  >
+                    Sim, registrar dose
+                  </button>
+                </div>
+
+                {manualDidApplyInsulin && (
+                  <div className="space-y-2.5 pt-2 border-t border-neutral-200/70 dark:border-neutral-700/60 animate-in fade-in">
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="text-[11px] font-bold text-neutral-600 dark:text-neutral-300 block mb-1">
+                          Quanto aplicou (U) *
+                        </label>
+                        <input
+                          type="number"
+                          step="0.5"
+                          min="0.5"
+                          max="150"
+                          required={manualDidApplyInsulin}
+                          placeholder="Ex: 4.0"
+                          value={manualInsulinUnits}
+                          onChange={(e) => setManualInsulinUnits(e.target.value)}
+                          className="w-full px-3 py-2 rounded-xl bg-white dark:bg-[#161619] text-sm font-mono font-extrabold text-[#111111] dark:text-white focus:outline-hidden focus:ring-2 focus:ring-[#FF5A36]"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="text-[11px] font-bold text-neutral-600 dark:text-neutral-300 block mb-1">
+                          Tipo de Insulina
+                        </label>
+                        <select
+                          value={manualInsulinType}
+                          onChange={(e) => setManualInsulinType(e.target.value as 'rapid' | 'basal')}
+                          className="w-full px-2.5 py-2 rounded-xl bg-white dark:bg-[#161619] text-xs font-bold text-[#111111] dark:text-white"
+                        >
+                          <option value="rapid">Rápida ({profile.rapidInsulinName})</option>
+                          <option value="basal">Basal ({profile.basalInsulinName})</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    {/* Botões rápidos de dose */}
+                    <div className="flex items-center gap-1 flex-wrap">
+                      {[2, 4, 6, 8, 10, 18].map((u) => (
+                        <button
+                          key={u}
+                          type="button"
+                          onClick={() => setManualInsulinUnits(String(u))}
+                          className={`px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold transition ${
+                            Number(manualInsulinUnits) === u
+                              ? 'bg-[#FF5A36] text-white'
+                              : 'bg-white dark:bg-[#161619] text-neutral-600 dark:text-neutral-300'
+                          }`}
+                        >
+                          {u}U
+                        </button>
+                      ))}
+                    </div>
+
+                    <div>
+                      <label className="text-[11px] font-bold text-neutral-600 dark:text-neutral-300 block mb-1">
+                        Local de Aplicação
+                      </label>
+                      <select
+                        value={selectedSite}
+                        onChange={(e) => setSelectedSite(e.target.value as any)}
+                        className="w-full px-3 py-2 rounded-xl bg-white dark:bg-[#161619] text-xs font-semibold text-[#111111] dark:text-white"
+                      >
+                        {INJECTION_SITES.map((s) => (
+                          <option key={s.id} value={s.id}>
+                            {s.name} ({s.region})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                )}
+              </div>
+
               <div>
                 <label className="text-xs font-bold text-neutral-700 dark:text-neutral-300 block mb-1.5">
                   Observações
@@ -3627,7 +4106,7 @@ export default function App() {
                   type="submit"
                   className="flex-1 py-2.5 bg-[#FF5A36] hover:bg-[#e84c29] text-white font-bold text-xs rounded-full shadow-xs transition"
                 >
-                  Salvar Medição
+                  {manualDidApplyInsulin ? 'Salvar Medição + Dose' : 'Salvar Medição'}
                 </button>
               </div>
             </form>

@@ -34,6 +34,10 @@ export interface GlucoseReading {
   symptoms?: string[];
   trendArrow?: GlucoseTrendArrow;
   ketosisChecked?: boolean;
+  insulinUnitsApplied?: number;
+  insulinTypeApplied?: 'rapid' | 'basal';
+  insulinNameApplied?: string;
+  linkedDoseId?: string;
 }
 
 export interface FoodItem {
@@ -116,6 +120,8 @@ export interface InsulinDoseRecord {
   carbsCovered?: number;
   injectionSite: InjectionSite;
   notes?: string;
+  linkedReadingId?: string;
+  context?: GlucoseContext;
 }
 
 export interface PatientProfile {
