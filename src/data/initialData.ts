@@ -8,7 +8,28 @@ import {
   HealthFitnessSync,
   WeightRecord,
   DailyRoutineLog,
+  NotificationPreferences,
+  EnabledRoutineGoals,
 } from '../types';
+
+export const DEFAULT_NOTIFICATION_PREFS: NotificationPreferences = {
+  enabled: true,
+  momentAlerts: true,
+  postMealTimer: true,
+  basalReminder: true,
+  waterReminder: true,
+  hypoHyperAlerts: true,
+  bedtimeReminder: true,
+  customReminders: true,
+};
+
+export const DEFAULT_ENABLED_ROUTINE_GOALS: EnabledRoutineGoals = {
+  fasting: true,
+  basal: true,
+  water: true,
+  exercise: true,
+  bedtime: true,
+};
 
 export const DEFAULT_PATIENT_PROFILE: PatientProfile = {
   name: 'Meu Perfil',
@@ -28,6 +49,10 @@ export const DEFAULT_PATIENT_PROFILE: PatientProfile = {
   mealCarbLimit: 65,
   emergencyContactName: '',
   emergencyContactPhone: '',
+  notificationPrefs: DEFAULT_NOTIFICATION_PREFS,
+  enabledRoutineGoals: DEFAULT_ENABLED_ROUTINE_GOALS,
+  routineHistory: [],
+  favoriteMeals: [],
 };
 
 /**
@@ -75,8 +100,8 @@ export function getInitialWeights(): WeightRecord[] {
   return [];
 }
 
-export function getInitialRoutineLog(): DailyRoutineLog {
-  const todayStr = new Date().toISOString().split('T')[0];
+export function getInitialRoutineLog(dateKey?: string): DailyRoutineLog {
+  const todayStr = dateKey || new Date().toISOString().split('T')[0];
   return {
     date: todayStr,
     waterMl: 0,
@@ -86,8 +111,6 @@ export function getInitialRoutineLog(): DailyRoutineLog {
     basalTime: '22:00',
     exerciseMinutes: 0,
     exerciseType: '',
-    footCheckDone: false,
-    footCheckNotes: '',
     bedtimeCheckDone: false,
     bedtimeBgValue: undefined,
   };

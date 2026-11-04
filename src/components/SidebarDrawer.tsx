@@ -36,7 +36,6 @@ export type AppPageId =
   | 'routine'
   | 'reports'
   | 'bolus'
-  | 'rotation'
   | 'weight'
   | 'profile'
   | 'reminders';
@@ -57,7 +56,6 @@ interface SidebarDrawerProps {
   onOpenBluetooth: () => void;
   onOpenReportModal: () => void;
   onOpenManualReading: () => void;
-  onOpenResetAll: () => void;
 }
 
 export const SidebarDrawer: React.FC<SidebarDrawerProps> = ({
@@ -75,7 +73,6 @@ export const SidebarDrawer: React.FC<SidebarDrawerProps> = ({
   onOpenSos,
   onOpenBluetooth,
   onOpenReportModal,
-  onOpenResetAll,
 }) => {
   if (!isOpen) return null;
 
@@ -296,21 +293,6 @@ export const SidebarDrawer: React.FC<SidebarDrawerProps> = ({
               </button>
 
               <button
-                onClick={() => handleItemClick('rotation')}
-                className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-2xl text-xs font-bold transition ${
-                  currentPage === 'rotation'
-                    ? 'bg-[#111111] text-white dark:bg-[#FF5A36]'
-                    : 'text-neutral-700 dark:text-neutral-300 hover:bg-[#F6F6F7] dark:hover:bg-[#222226]'
-                }`}
-              >
-                <div className="flex items-center gap-3">
-                  <ShieldCheck className="w-4 h-4 text-[#FF5A36]" />
-                  <span>Mapa de Rodízio de Aplicação</span>
-                </div>
-                <ChevronRight className="w-3.5 h-3.5 opacity-50" />
-              </button>
-
-              <button
                 onClick={() => handleItemClick('weight')}
                 className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-2xl text-xs font-bold transition ${
                   currentPage === 'weight'
@@ -429,22 +411,6 @@ export const SidebarDrawer: React.FC<SidebarDrawerProps> = ({
                 </div>
                 <span className="text-[10px] text-neutral-400">
                   {isDark ? 'Escuro' : 'Claro'}
-                </span>
-              </button>
-
-              <button
-                onClick={() => {
-                  onClose();
-                  onOpenResetAll();
-                }}
-                className="w-full flex items-center justify-between px-3.5 py-2.5 rounded-2xl text-xs font-bold text-red-600 dark:text-red-400 bg-red-500/10 hover:bg-red-500/20 transition"
-              >
-                <div className="flex items-center gap-3">
-                  <Trash2 className="w-4 h-4 text-red-600 dark:text-red-400" />
-                  <span>Zerar Tudo (Limpar Dados)</span>
-                </div>
-                <span className="text-[10px] font-extrabold px-1.5 py-0.5 rounded-md bg-red-600 text-white">
-                  2 Etapas
                 </span>
               </button>
             </div>

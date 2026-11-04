@@ -47,11 +47,22 @@ export function playNotificationChime() {
   }
 }
 
+export function getAppLogoUrl(): string {
+  const base = (import.meta as any).env?.BASE_URL || '/';
+  return `${base}logo.png`;
+}
+
+export function getAppBadgeUrl(): string {
+  const base = (import.meta as any).env?.BASE_URL || '/';
+  return `${base}pwa-192x192.png`;
+}
+
 export function sendWebNotification(
   title: string,
   options: {
     body: string;
     icon?: string;
+    badge?: string;
     tag?: string;
     requireInteraction?: boolean;
   }
@@ -64,11 +75,52 @@ export function sendWebNotification(
   }
 
   if (Notification.permission === 'granted') {
+    const resolvedIcon = options.icon || getAppLogoUrl();
+    const resolvedBadge = options.badge || getAppBadgeUrl();
+    const resolvedTag = options.tag || `minha-glico-${Date.now()}`;
+
+    // Prefer Service Worker registration showNotification for full PWA Push support on mobile/desktop
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.ready
+        .then((reg) => {
+          if (reg && typeof reg.showNotification === 'function') {
+            return reg.showNotification(title, {
+              body: options.body,
+              icon: resolvedIcon,
+              badge: resolvedBadge,
+              tag: resolvedTag,
+              requireInteraction: options.requireInteraction ?? true,
+              vibrate: [200, 100, 200],
+            } as NotificationOptions);
+          }
+          throw new Error('No SW showNotification');
+        })
+        .catch(() => {
+          try {
+            const notif = new Notification(title, {
+              body: options.body,
+              icon: resolvedIcon,
+              badge: resolvedBadge,
+              tag: resolvedTag,
+              requireInteraction: options.requireInteraction ?? true,
+            });
+            notif.onclick = () => {
+              window.focus();
+              notif.close();
+            };
+          } catch (err) {
+            console.warn('Erro ao disparar fallback Notification:', err);
+          }
+        });
+      return true;
+    }
+
     try {
       const notif = new Notification(title, {
         body: options.body,
-        icon: options.icon || 'https://fav.farm/🩸',
-        tag: options.tag || 'minha-glico-reminder',
+        icon: resolvedIcon,
+        badge: resolvedBadge,
+        tag: resolvedTag,
         requireInteraction: options.requireInteraction ?? true,
       });
 

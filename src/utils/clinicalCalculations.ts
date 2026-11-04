@@ -1,4 +1,13 @@
-import { GlucoseReading, PatientProfile, InsulinDoseRecord, InjectionSite, GlucoseContext } from '../types';
+import {
+  GlucoseReading,
+  PatientProfile,
+  InsulinDoseRecord,
+  InjectionSite,
+  GlucoseContext,
+  CustomGlucoseMoment,
+  MomentCategory,
+  MealRecord,
+} from '../types';
 
 export interface TIRStatistics {
   veryLowCount: number;
@@ -293,24 +302,114 @@ export function playEmergencyAlertSound(type: 'hypo' | 'hyper') {
   }
 }
 
-// 8 Momentos clínicos de medição solicitados
-export const GLUCOSE_MOMENTS: {
-  value: GlucoseContext;
-  label: string;
-  shortLabel: string;
-  badgeColor: string;
-}[] = [
-  { value: 'jejum', label: 'Jejum', shortLabel: 'Jejum', badgeColor: 'bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300' },
-  { value: 'cafe_manha', label: 'Café da Manhã', shortLabel: 'Café', badgeColor: 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300' },
-  { value: 'pos_cafe', label: 'Pós Café da Manhã', shortLabel: 'Pós Café', badgeColor: 'bg-orange-100 text-orange-800 dark:bg-orange-950 dark:text-orange-300' },
-  { value: 'almoco', label: 'Almoço', shortLabel: 'Almoço', badgeColor: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300' },
-  { value: 'pos_almoco', label: 'Pós Almoço', shortLabel: 'Pós Almoço', badgeColor: 'bg-teal-100 text-teal-800 dark:bg-teal-950 dark:text-teal-300' },
-  { value: 'jantar', label: 'Jantar', shortLabel: 'Jantar', badgeColor: 'bg-indigo-100 text-indigo-800 dark:bg-indigo-950 dark:text-indigo-300' },
-  { value: 'pos_jantar', label: 'Pós Jantar', shortLabel: 'Pós Jantar', badgeColor: 'bg-purple-100 text-purple-800 dark:bg-purple-950 dark:text-purple-300' },
-  { value: 'madrugada', label: 'Madrugada', shortLabel: 'Madrugada', badgeColor: 'bg-slate-200 text-slate-800 dark:bg-slate-800 dark:text-slate-300' },
+// Momentos clínicos padrão com classificação entre Refeição, Pós-Refeição e Jejum/Rotina
+export const DEFAULT_GLUCOSE_MOMENTS: CustomGlucoseMoment[] = [
+  {
+    id: 'jejum',
+    label: 'Jejum',
+    shortLabel: 'Jejum',
+    category: 'fasting',
+    badgeColor: 'bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300',
+  },
+  {
+    id: 'cafe_manha',
+    label: 'Café da Manhã',
+    shortLabel: 'Café',
+    category: 'meal',
+    defaultMealType: 'cafe',
+    badgeColor: 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300',
+  },
+  {
+    id: 'pos_cafe',
+    label: 'Pós Café da Manhã',
+    shortLabel: 'Pós Café',
+    category: 'post_meal',
+    defaultMealType: 'cafe',
+    badgeColor: 'bg-orange-100 text-orange-800 dark:bg-orange-950 dark:text-orange-300',
+  },
+  {
+    id: 'almoco',
+    label: 'Almoço',
+    shortLabel: 'Almoço',
+    category: 'meal',
+    defaultMealType: 'almoco',
+    badgeColor: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300',
+  },
+  {
+    id: 'pos_almoco',
+    label: 'Pós Almoço',
+    shortLabel: 'Pós Almoço',
+    category: 'post_meal',
+    defaultMealType: 'almoco',
+    badgeColor: 'bg-teal-100 text-teal-800 dark:bg-teal-950 dark:text-teal-300',
+  },
+  {
+    id: 'lanche',
+    label: 'Lanche',
+    shortLabel: 'Lanche',
+    category: 'meal',
+    defaultMealType: 'lanche',
+    badgeColor: 'bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300',
+  },
+  {
+    id: 'pos_lanche',
+    label: 'Pós Lanche',
+    shortLabel: 'Pós Lanche',
+    category: 'post_meal',
+    defaultMealType: 'lanche',
+    badgeColor: 'bg-pink-100 text-pink-800 dark:bg-pink-950 dark:text-pink-300',
+  },
+  {
+    id: 'jantar',
+    label: 'Jantar',
+    shortLabel: 'Jantar',
+    category: 'meal',
+    defaultMealType: 'jantar',
+    badgeColor: 'bg-indigo-100 text-indigo-800 dark:bg-indigo-950 dark:text-indigo-300',
+  },
+  {
+    id: 'pos_jantar',
+    label: 'Pós Jantar',
+    shortLabel: 'Pós Jantar',
+    category: 'post_meal',
+    defaultMealType: 'jantar',
+    badgeColor: 'bg-purple-100 text-purple-800 dark:bg-purple-950 dark:text-purple-300',
+  },
+  {
+    id: 'madrugada',
+    label: 'Madrugada',
+    shortLabel: 'Madrugada',
+    category: 'fasting',
+    badgeColor: 'bg-slate-200 text-slate-800 dark:bg-slate-800 dark:text-slate-300',
+  },
 ];
 
-export function getGlucoseContextLabel(context: GlucoseContext): string {
+// Mantido para compatibilidade com importações legadas
+export const GLUCOSE_MOMENTS = DEFAULT_GLUCOSE_MOMENTS.map((m) => ({
+  value: m.id,
+  label: m.label,
+  shortLabel: m.shortLabel,
+  badgeColor: m.badgeColor || 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300',
+}));
+
+export function getEffectiveGlucoseMoments(customMoments?: CustomGlucoseMoment[]): CustomGlucoseMoment[] {
+  if (customMoments && Array.isArray(customMoments) && customMoments.length > 0) {
+    return customMoments;
+  }
+  return DEFAULT_GLUCOSE_MOMENTS;
+}
+
+export function getGlucoseContextLabel(
+  context: GlucoseContext,
+  customMoments?: CustomGlucoseMoment[]
+): string {
+  const moments = getEffectiveGlucoseMoments(customMoments);
+  const foundCustom = moments.find((m) => m.id === context);
+  if (foundCustom) return foundCustom.label;
+
+  const foundDefault = DEFAULT_GLUCOSE_MOMENTS.find((m) => m.id === context);
+  if (foundDefault) return foundDefault.label;
+
   switch (context) {
     case 'jejum':
     case 'fasting':
@@ -326,6 +425,10 @@ export function getGlucoseContextLabel(context: GlucoseContext): string {
     case 'pos_almoco':
     case 'post_meal_2h':
       return 'Pós Almoço';
+    case 'lanche':
+      return 'Lanche';
+    case 'pos_lanche':
+      return 'Pós Lanche';
     case 'jantar':
     case 'bedtime':
       return 'Jantar';
@@ -337,18 +440,74 @@ export function getGlucoseContextLabel(context: GlucoseContext): string {
     case 'exercise':
       return 'Exercício';
     case 'other':
-    default:
       return 'Outro Momento';
+    default:
+      return context || 'Momento Personalizado';
   }
 }
 
-export function getGlucoseContextBadgeColor(context: GlucoseContext): string {
-  const match = GLUCOSE_MOMENTS.find((m) => m.value === context);
-  if (match) return match.badgeColor;
+export function getMomentCategory(
+  context: GlucoseContext,
+  customMoments?: CustomGlucoseMoment[]
+): MomentCategory {
+  const moments = getEffectiveGlucoseMoments(customMoments);
+  const found = moments.find((m) => m.id === context) || DEFAULT_GLUCOSE_MOMENTS.find((m) => m.id === context);
+  if (found) return found.category;
+
+  if (context === 'cafe_manha' || context === 'almoco' || context === 'lanche' || context === 'jantar' || context === 'pre_meal') {
+    return 'meal';
+  }
+  if (
+    context === 'pos_cafe' ||
+    context === 'pos_almoco' ||
+    context === 'pos_lanche' ||
+    context === 'pos_jantar' ||
+    context === 'post_meal_1h' ||
+    context === 'post_meal_2h'
+  ) {
+    return 'post_meal';
+  }
+  return 'fasting';
+}
+
+export function getGlucoseContextBadgeColor(
+  context: GlucoseContext,
+  customMoments?: CustomGlucoseMoment[]
+): string {
+  const moments = getEffectiveGlucoseMoments(customMoments);
+  const match = moments.find((m) => m.id === context) || DEFAULT_GLUCOSE_MOMENTS.find((m) => m.id === context);
+  if (match) {
+    if (match.badgeColor) return match.badgeColor;
+    if (match.category === 'meal') {
+      return 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300';
+    }
+    if (match.category === 'post_meal') {
+      return 'bg-orange-100 text-orange-800 dark:bg-orange-950 dark:text-orange-300';
+    }
+    return 'bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300';
+  }
   if (context === 'fasting') return 'bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300';
   if (context === 'pre_meal') return 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300';
   if (context === 'post_meal_1h' || context === 'post_meal_2h') return 'bg-teal-100 text-teal-800 dark:bg-teal-950 dark:text-teal-300';
   if (context === 'dawn') return 'bg-slate-200 text-slate-800 dark:bg-slate-800 dark:text-slate-300';
   return 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300';
 }
+
+export function getMealTypeLabel(mealType?: MealRecord['mealType']): string {
+  switch (mealType) {
+    case 'cafe':
+      return 'Café da Manhã';
+    case 'almoco':
+      return 'Almoço';
+    case 'lanche':
+      return 'Lanche';
+    case 'jantar':
+      return 'Jantar';
+    case 'ceia':
+      return 'Ceia';
+    default:
+      return 'Refeição';
+  }
+}
+
 

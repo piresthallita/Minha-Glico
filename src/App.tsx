@@ -41,6 +41,7 @@ import {
   Footprints,
   ChevronLeft,
   ChevronRight,
+  Star,
 } from 'lucide-react';
 
 import { motion, AnimatePresence } from 'motion/react';
@@ -55,9 +56,13 @@ import {
   FoodItem,
   ReminderItem,
   GlucoseContext,
+  CustomGlucoseMoment,
+  MomentCategory,
   HealthFitnessSync,
   WeightRecord,
   DailyRoutineLog,
+  NotificationPreferences,
+  EnabledRoutineGoals,
 } from './types';
 
 import { OFFICIAL_FOOD_DATABASE } from './data/foodDatabase';
@@ -72,6 +77,8 @@ import {
   getInitialWeights,
   getInitialRoutineLog,
   isLegacyDemoId,
+  DEFAULT_NOTIFICATION_PREFS,
+  DEFAULT_ENABLED_ROUTINE_GOALS,
 } from './data/initialData';
 
 import {
@@ -79,11 +86,12 @@ import {
   calculateIOB,
   calculateBolus,
   playEmergencyAlertSound,
-  getNextRecommendedSite,
   getGlucoseContextLabel,
   getGlucoseContextBadgeColor,
-  GLUCOSE_MOMENTS,
-  INJECTION_SITES,
+  getEffectiveGlucoseMoments,
+  getMomentCategory,
+  getMealTypeLabel,
+  DEFAULT_GLUCOSE_MOMENTS,
 } from './utils/clinicalCalculations';
 
 import {
@@ -91,6 +99,7 @@ import {
   requestNotificationPermission,
   sendWebNotification,
   playNotificationChime,
+  getAppLogoUrl,
 } from './utils/notifications';
 
 import { auth, loginWithGoogle, logoutFirebase } from './firebase';
@@ -101,6 +110,7 @@ import {
   saveReadingToFirestore,
   deleteReadingFromFirestore,
   saveMealToFirestore,
+  deleteMealFromFirestore,
   saveDoseToFirestore,
   deleteDoseFromFirestore,
   saveReminderToFirestore,
@@ -111,7 +121,6 @@ import {
 } from './services/firebaseSync';
 
 import { GlucoseChart } from './components/GlucoseChart';
-import { BodyRotationMap } from './components/BodyRotationMap';
 import { HypoEmergencyModal } from './components/HypoEmergencyModal';
 import { BluetoothScannerModal } from './components/BluetoothScannerModal';
 import { AiMealScannerModal } from './components/AiMealScannerModal';
@@ -278,41 +287,104 @@ export default function App() {
   const [activePage, setActivePage] = useState<AppPageId>('today');
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
-  // Daily routine habits state
-  const [routineLog, setRoutineLog] = useState<DailyRoutineLog>(() => {
-    const saved = localStorage.getItem('mg_routine_v2');
-    const todayStr = new Date().toISOString().split('T')[0];
-    if (saved) {
+  // Daily routine habits history & selected day state
+  const [selectedRoutineDate, setSelectedRoutineDate] = useState<string>(() => getLocalDateKey());
+  const [routineHistory, setRoutineHistory] = useState<DailyRoutineLog[]>(() => {
+    const savedHistory = localStorage.getItem('mg_routine_history_v1');
+    if (savedHistory) {
       try {
-        const parsed = JSON.parse(saved);
-        // Strip legacy sample routine (1750ml + Caminhada aeróbica)
-        if (
-          parsed.waterMl === 1750 &&
-          parsed.exerciseType === 'Caminhada aeróbica' &&
-          parsed.footCheckNotes === 'Pele íntegra, sem feridas ou pontos de pressão.'
-        ) {
-          return getInitialRoutineLog();
-        }
-        if (parsed.date === todayStr) return parsed;
-        return {
-          ...getInitialRoutineLog(),
-          date: todayStr,
-          waterGoalMl: parsed.waterGoalMl || 2500,
-          basalUnits: parsed.basalUnits || 0,
-        };
-      } catch (e) {
-        return getInitialRoutineLog();
+        const parsed = JSON.parse(savedHistory) as DailyRoutineLog[];
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      } catch {
+        // ignore
       }
     }
-    return getInitialRoutineLog();
+    const savedLegacy = localStorage.getItem('mg_routine_v2');
+    if (savedLegacy) {
+      try {
+        const parsed = JSON.parse(savedLegacy);
+        if (
+          parsed &&
+          parsed.date &&
+          !(parsed.waterMl === 1750 && parsed.exerciseType === 'Caminhada aeróbica')
+        ) {
+          return [parsed];
+        }
+      } catch {
+        // ignore
+      }
+    }
+    return [getInitialRoutineLog(getLocalDateKey())];
   });
 
   useEffect(() => {
-    localStorage.setItem('mg_routine_v2', JSON.stringify(routineLog));
-  }, [routineLog]);
+    localStorage.setItem('mg_routine_history_v1', JSON.stringify(routineHistory));
+  }, [routineHistory]);
+
+  const routineLog: DailyRoutineLog = React.useMemo(() => {
+    const found = routineHistory.find((r) => r.date === selectedRoutineDate);
+    if (found) return found;
+    const latestEntry = routineHistory[0];
+    return {
+      ...getInitialRoutineLog(selectedRoutineDate),
+      waterGoalMl: latestEntry?.waterGoalMl || 2500,
+      basalUnits: latestEntry?.basalUnits || 0,
+    };
+  }, [routineHistory, selectedRoutineDate]);
 
   const handleUpdateRoutine = (updated: Partial<DailyRoutineLog>) => {
-    setRoutineLog((prev) => ({ ...prev, ...updated }));
+    setRoutineHistory((prev) => {
+      const targetDate = updated.date || selectedRoutineDate;
+      const exists = prev.some((item) => item.date === targetDate);
+      const nextHistory = exists
+        ? prev.map((item) => (item.date === targetDate ? { ...item, ...updated } : item))
+        : [{ ...routineLog, ...updated, date: targetDate }, ...prev];
+
+      const sorted = [...nextHistory].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 90);
+      if (currentUser) {
+        saveProfileToFirestore(currentUser.uid, { ...profile, routineHistory: sorted });
+      }
+      return sorted;
+    });
+  };
+
+  const enabledRoutineGoals: EnabledRoutineGoals =
+    profile.enabledRoutineGoals || DEFAULT_ENABLED_ROUTINE_GOALS;
+
+  const handleToggleGoalEnabled = (goalKey: keyof EnabledRoutineGoals) => {
+    const nextGoals: EnabledRoutineGoals = {
+      ...enabledRoutineGoals,
+      [goalKey]: !enabledRoutineGoals[goalKey],
+    };
+    const updatedProfile: PatientProfile = {
+      ...profile,
+      enabledRoutineGoals: nextGoals,
+    };
+    setProfile(updatedProfile);
+    if (currentUser) {
+      saveProfileToFirestore(currentUser.uid, updatedProfile);
+    }
+  };
+
+  const notificationPrefs: NotificationPreferences =
+    profile.notificationPrefs || DEFAULT_NOTIFICATION_PREFS;
+
+  const handleUpdateNotificationPref = (
+    key: keyof NotificationPreferences,
+    value: boolean
+  ) => {
+    const nextPrefs: NotificationPreferences = {
+      ...notificationPrefs,
+      [key]: value,
+    };
+    const updatedProfile: PatientProfile = {
+      ...profile,
+      notificationPrefs: nextPrefs,
+    };
+    setProfile(updatedProfile);
+    if (currentUser) {
+      saveProfileToFirestore(currentUser.uid, updatedProfile);
+    }
   };
 
   // Backwards compatibility alias
@@ -323,7 +395,6 @@ export default function App() {
   };
 
   // Sub-tabs
-  const [bolusSubTab, setBolusSubTab] = useState<'calculator' | 'rotation'>('calculator');
   const [mealsSubTab, setMealsSubTab] = useState<'plate' | 'search' | 'favorites'>('plate');
   const [reportsSubTab, setReportsSubTab] = useState<'overview' | 'reminders' | 'profile'>('overview');
 
@@ -381,7 +452,7 @@ export default function App() {
   const [aiNotesForCurrentMeal, setAiNotesForCurrentMeal] = useState('');
   const [glycemicImpactCurrentMeal, setGlycemicImpactCurrentMeal] = useState('');
 
-  // Quick manual reading form + optional post-measurement insulin application
+  // Quick manual reading form + Momentos customization + Meal/Post-Meal flow
   const [manualBgValue, setManualBgValue] = useState<string>('');
   const [manualDateTime, setManualDateTime] = useState<string>(() => toLocalDateTimeInputString());
   const [manualContext, setManualContext] = useState<GlucoseContext>('jejum');
@@ -391,17 +462,55 @@ export default function App() {
   const [manualInsulinUnits, setManualInsulinUnits] = useState<string>('');
   const [manualInsulinType, setManualInsulinType] = useState<'rapid' | 'basal'>('rapid');
 
+  // Custom Momentos da Medição management state
+  const [isCustomizingMoments, setIsCustomizingMoments] = useState<boolean>(false);
+  const [newMomentLabel, setNewMomentLabel] = useState<string>('');
+  const [newMomentCategory, setNewMomentCategory] = useState<MomentCategory>('meal');
+  const [newMomentDefaultMeal, setNewMomentDefaultMeal] = useState<MealRecord['mealType']>('almoco');
+  const [newMomentNotifyTime, setNewMomentNotifyTime] = useState<string>('');
+
+  // Meal flow inside Manual Reading Modal (when Momento is a Refeição)
+  const [manualFlowMode, setManualFlowMode] = useState<'meal' | 'post_meal'>('post_meal');
+  const [manualSelectedMealType, setManualSelectedMealType] = useState<MealRecord['mealType']>('almoco');
+  const [manualCustomMealName, setManualCustomMealName] = useState<string>('');
+  const [manualRegisterMealFoods, setManualRegisterMealFoods] = useState<boolean>(false);
+
+  // Pending meal registration redirected from the Manual Reading Modal
+  const [pendingMealFromReading, setPendingMealFromReading] = useState<{
+    readingId: string;
+    bgValue: number;
+    mealType: MealRecord['mealType'];
+    mealTitle: string;
+    timestamp: string;
+    context: GlucoseContext;
+    notes?: string;
+  } | null>(null);
+
+  // Favorite meal nickname ("Apelido") states
+  const [favoriteNicknameInput, setFavoriteNicknameInput] = useState<string>('');
+  const [editingFavoriteId, setEditingFavoriteId] = useState<string | null>(null);
+  const [editingFavoriteNickname, setEditingFavoriteNickname] = useState<string>('');
+
   // Selected date filter for Glucose Monitoring & Insulin Applications pages (defaults to Today)
   const [monitoringDate, setMonitoringDate] = useState<string>(() => getLocalDateKey());
   const [preselectedReadingForDose, setPreselectedReadingForDose] = useState<string | null>(null);
 
-  // Bolus calculator state
+  // Bolus calculator state & linked measurement/meal context
   const [bolusCarbsInput, setBolusCarbsInput] = useState<number>(0);
   const [bolusBgInput, setBolusBgInput] = useState<string>('');
   const [bolusTimeOfDay, setBolusTimeOfDay] = useState<'morning' | 'afternoon' | 'night'>('afternoon');
+  const [bolusWillApplyDose, setBolusWillApplyDose] = useState<boolean>(true);
+  const [pendingBolusContext, setPendingBolusContext] = useState<{
+    readingId?: string;
+    mealId?: string;
+    bgValue?: number;
+    mealTitle?: string;
+    mealCarbs?: number;
+    timestamp?: string;
+    context?: string;
+  } | null>(null);
 
   // Insulin dose logger state
-  const [selectedSite, setSelectedSite] = useState<InsulinDoseRecord['injectionSite']>('abdomen_top_right');
   const [doseUnitsInput, setDoseUnitsInput] = useState<string>('4.0');
   const [doseTypeInput, setDoseTypeInput] = useState<'rapid' | 'basal'>('rapid');
   const [doseNotesInput, setDoseNotesInput] = useState('');
@@ -457,7 +566,7 @@ export default function App() {
         if (lastUid !== firebaseUser.uid) {
           localStorage.setItem('mg_last_uid', firebaseUser.uid);
           setFavorites([]);
-          setRoutineLog(getInitialRoutineLog());
+          setRoutineHistory([getInitialRoutineLog(getLocalDateKey())]);
           setFitnessData(INITIAL_FITNESS_DATA);
           setCurrentPlate([]);
         }
@@ -471,6 +580,12 @@ export default function App() {
           const cloudData = await loadUserDataFromFirestore(firebaseUser.uid);
           if (cloudData.profile) {
             setProfile(cloudData.profile);
+            if (Array.isArray(cloudData.profile.routineHistory) && cloudData.profile.routineHistory.length > 0) {
+              setRoutineHistory(cloudData.profile.routineHistory);
+            }
+            if (Array.isArray(cloudData.profile.favoriteMeals)) {
+              setFavorites(cloudData.profile.favoriteMeals);
+            }
           } else {
             const initialUserProfile: PatientProfile = {
               ...DEFAULT_PATIENT_PROFILE,
@@ -511,7 +626,8 @@ export default function App() {
     setReminders([]);
     setCurrentPlate([]);
     setFitnessData(INITIAL_FITNESS_DATA);
-    setRoutineLog(getInitialRoutineLog());
+    setRoutineHistory([getInitialRoutineLog(getLocalDateKey())]);
+    setSelectedRoutineDate(getLocalDateKey());
     setProfile(cleanProfile);
     setIsPostMealTimerActive(false);
 
@@ -525,6 +641,7 @@ export default function App() {
       'mg_reminders',
       'mg_fitness',
       'mg_routine_v2',
+      'mg_routine_history_v1',
     ].forEach((key) => localStorage.removeItem(key));
     localStorage.setItem('mg_profile', JSON.stringify(cleanProfile));
 
@@ -569,7 +686,7 @@ export default function App() {
       setWeights([]);
       setFavorites([]);
       setReminders([]);
-      setRoutineLog(getInitialRoutineLog());
+      setRoutineHistory([getInitialRoutineLog(getLocalDateKey())]);
       setProfile(DEFAULT_PATIENT_PROFILE);
       setIsUserMenuOpen(false);
       triggerToast('Sessão Encerrada', 'Você saiu da sua conta. Seus dados estão seguros no Firebase.');
@@ -655,19 +772,25 @@ export default function App() {
     triggerToast(title, body);
   };
 
-  // Background reminder checker (every 25 seconds)
+  // Background reminder & Momentos notification checker (every 25 seconds)
   useEffect(() => {
     const interval = setInterval(() => {
+      const prefs = profile.notificationPrefs || DEFAULT_NOTIFICATION_PREFS;
+      if (!prefs.enabled) return;
+
       const now = new Date();
       const currentHours = String(now.getHours()).padStart(2, '0');
       const currentMins = String(now.getMinutes()).padStart(2, '0');
       const currentTimeString = `${currentHours}:${currentMins}`;
       const todayKey = now.toISOString().slice(0, 10);
 
+      // 1. Check custom reminders & basal alerts
       reminders.forEach((r) => {
         if (!r.enabled) return;
-        const triggerKey = `${r.id}_${todayKey}_${currentTimeString}`;
+        if (r.type === 'basal' && !prefs.basalReminder) return;
+        if (r.type !== 'basal' && !prefs.customReminders) return;
 
+        const triggerKey = `rem_${r.id}_${todayKey}_${currentTimeString}`;
         if (r.timeString === currentTimeString && lastTriggeredTimesRef.current[r.id] !== triggerKey) {
           lastTriggeredTimesRef.current[r.id] = triggerKey;
 
@@ -684,14 +807,37 @@ export default function App() {
         }
       });
 
+      // 2. Check Momentos da Medição scheduled notification times
+      if (prefs.momentAlerts) {
+        const currentMoments = getEffectiveGlucoseMoments(profile.customMoments);
+        currentMoments.forEach((m) => {
+          if (!m.notifyTime || m.notifyEnabled === false) return;
+          const triggerKey = `moment_${m.id}_${todayKey}_${currentTimeString}`;
+          if (
+            m.notifyTime === currentTimeString &&
+            lastTriggeredTimesRef.current[`moment_${m.id}`] !== triggerKey
+          ) {
+            lastTriggeredTimesRef.current[`moment_${m.id}`] = triggerKey;
+            const title = `🩸 Hora de Medir: ${m.label}`;
+            const body = `Chegou o horário programado (${m.notifyTime}) para o momento "${m.label}". Registre sua glicemia!`;
+            sendWebNotification(title, { body });
+            triggerToast(title, body);
+          }
+        });
+      }
+
+      // 3. Check 2h Post-Meal Timer
       if (isPostMealTimerActive) {
         setPostMealMinutesLeft((prev) => {
           if (prev <= 1) {
             setIsPostMealTimerActive(false);
-            const title = '🩸 Alerta: 2 Horas Pós-Refeição!';
-            const body = 'Atingido o tempo de pico glicêmico. Faça a medição para validar a contagem de carboidratos.';
-            sendWebNotification(title, { body });
-            triggerToast(title, body);
+            if (prefs.postMealTimer) {
+              const title = '🩸 Alerta: 2 Horas Pós-Refeição!';
+              const body =
+                'Atingido o tempo de pico glicêmico. Faça a medição para validar a contagem de carboidratos.';
+              sendWebNotification(title, { body });
+              triggerToast(title, body);
+            }
             return 0;
           }
           return prev - 1;
@@ -814,15 +960,232 @@ export default function App() {
     }
 
     // Automatically focus the monitoring date on the day of the reading just added
-    setMonitoringDate(getLocalDateKey(new Date(newRecord.timestamp)));
+    const readingDateKey = getLocalDateKey(new Date(newRecord.timestamp));
+    setMonitoringDate(readingDateKey);
+
+    // Auto-sync bedtime check in Daily Routine Goals if measuring at Ceia or Madrugada
+    if (newRecord.context === 'ceia' || newRecord.context === 'madrugada') {
+      handleUpdateRoutine({
+        date: readingDateKey,
+        bedtimeCheckDone: true,
+      });
+    }
 
     if (newRecord.value < 70) {
       playEmergencyAlertSound('hypo');
       setIsHypoModalOpen(true);
+      if (notificationPrefs.enabled && notificationPrefs.hypoHyperAlerts) {
+        sendWebNotification('⚠️ Alerta de Hipoglicemia!', {
+          body: `Glicemia de ${newRecord.value} mg/dL registrada. Aplique a Regra dos 15 imediatamente.`,
+        });
+      }
     } else if (newRecord.value > 250) {
       playEmergencyAlertSound('hyper');
+      if (notificationPrefs.enabled && notificationPrefs.hypoHyperAlerts) {
+        sendWebNotification('⚠️ Alerta de Hiperglicemia!', {
+          body: `Glicemia elevada (${newRecord.value} mg/dL). Confira sua insulina ativa e hidratação.`,
+        });
+      }
     }
     return newRecord;
+  };
+
+  // Effective customizable moments
+  const effectiveMoments = getEffectiveGlucoseMoments(profile.customMoments);
+
+  // Refresh modal timestamp and sync flow mode whenever the Manual Reading Modal opens
+  useEffect(() => {
+    if (isManualReadingModalOpen) {
+      setManualDateTime(toLocalDateTimeInputString(new Date()));
+      const selectedMom = effectiveMoments.find((m) => m.id === manualContext);
+      if (selectedMom) {
+        setManualFlowMode(selectedMom.category === 'meal' ? 'meal' : 'post_meal');
+      }
+    }
+  }, [isManualReadingModalOpen]);
+
+  const handleUpdateCustomMoments = (nextMoments: CustomGlucoseMoment[]) => {
+    const updatedProfile: PatientProfile = {
+      ...profile,
+      customMoments: nextMoments,
+    };
+    setProfile(updatedProfile);
+    localStorage.setItem('mg_profile', JSON.stringify(updatedProfile));
+    if (currentUser) {
+      saveProfileToFirestore(currentUser.uid, updatedProfile);
+    }
+  };
+
+  const handleAddCustomMoment = () => {
+    const trimmed = newMomentLabel.trim();
+    if (!trimmed) return;
+    const id = `moment_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+    const newMoment: CustomGlucoseMoment = {
+      id,
+      label: trimmed,
+      shortLabel: trimmed.slice(0, 12),
+      category: newMomentCategory,
+      defaultMealType: newMomentCategory === 'meal' ? newMomentDefaultMeal : undefined,
+      notifyTime: newMomentNotifyTime || undefined,
+      notifyEnabled: Boolean(newMomentNotifyTime),
+    };
+    const nextList = [...effectiveMoments, newMoment];
+    handleUpdateCustomMoments(nextList);
+    setNewMomentLabel('');
+    setNewMomentNotifyTime('');
+    handleSelectManualMoment(newMoment);
+    triggerToast(
+      'Momento Criado!',
+      `"${newMoment.label}"${
+        newMoment.notifyTime ? ` (Notificação às ${newMoment.notifyTime})` : ''
+      } salvo nos seus momentos.`
+    );
+  };
+
+  const handleChangeMomentCategory = (momentId: string, nextCat: MomentCategory) => {
+    const nextList = effectiveMoments.map((m) =>
+      m.id === momentId
+        ? {
+            ...m,
+            category: nextCat,
+            defaultMealType: nextCat === 'meal' ? m.defaultMealType || 'almoco' : m.defaultMealType,
+          }
+        : m
+    );
+    handleUpdateCustomMoments(nextList);
+    if (manualContext === momentId) {
+      setManualFlowMode(nextCat === 'meal' ? 'meal' : 'post_meal');
+    }
+  };
+
+  const handleUpdateMomentNotifyTime = (momentId: string, timeStr: string) => {
+    const nextList = effectiveMoments.map((m) =>
+      m.id === momentId
+        ? {
+            ...m,
+            notifyTime: timeStr || undefined,
+            notifyEnabled: Boolean(timeStr),
+          }
+        : m
+    );
+    handleUpdateCustomMoments(nextList);
+    if (timeStr) {
+      triggerToast('Horário de Notificação Salvo', `Você será notificado às ${timeStr}.`);
+    }
+  };
+
+  const handleToggleMomentNotify = (momentId: string) => {
+    const nextList = effectiveMoments.map((m) =>
+      m.id === momentId
+        ? {
+            ...m,
+            notifyEnabled: m.notifyEnabled === false ? true : false,
+          }
+        : m
+    );
+    handleUpdateCustomMoments(nextList);
+  };
+
+  const handleDeleteMoment = (momentId: string) => {
+    if (effectiveMoments.length <= 1) return;
+    const nextList = effectiveMoments.filter((m) => m.id !== momentId);
+    handleUpdateCustomMoments(nextList);
+    if (manualContext === momentId && nextList[0]) {
+      handleSelectManualMoment(nextList[0]);
+    }
+  };
+
+  const handleRestoreDefaultMoments = () => {
+    handleUpdateCustomMoments(DEFAULT_GLUCOSE_MOMENTS);
+    triggerToast('Momentos Restaurados', 'Os momentos padrão foram restaurados.');
+  };
+
+  const handleSelectManualMoment = (moment: CustomGlucoseMoment) => {
+    setManualContext(moment.id);
+    if (moment.category === 'meal') {
+      setManualFlowMode('meal');
+      if (moment.defaultMealType) {
+        setManualSelectedMealType(moment.defaultMealType);
+      } else {
+        const lower = moment.label.toLowerCase();
+        if (lower.includes('café') || lower.includes('cafe')) setManualSelectedMealType('cafe');
+        else if (lower.includes('almoço') || lower.includes('almoco')) setManualSelectedMealType('almoco');
+        else if (lower.includes('lanche')) setManualSelectedMealType('lanche');
+        else if (lower.includes('jantar')) setManualSelectedMealType('jantar');
+        else if (lower.includes('ceia')) setManualSelectedMealType('ceia');
+        else setManualSelectedMealType('outro');
+      }
+    } else {
+      setManualFlowMode('post_meal');
+    }
+  };
+
+  // Redirect directly to the Meals page when user chooses "Sim, cadastrar alimentos"
+  const handleRedirectFromModalToMealsPage = () => {
+    setManualRegisterMealFoods(true);
+    const val = Number(manualBgValue);
+    if (!val || val <= 0) {
+      triggerToast(
+        'Modo Cadastrar Alimentos Selecionado',
+        'Digite o valor da sua glicemia (mg/dL) no topo e clique no botão laranja abaixo para ir direto à Página de Refeições!'
+      );
+      return;
+    }
+
+    const parsedDate = manualDateTime ? new Date(manualDateTime) : new Date();
+    const finalTimestamp = isNaN(parsedDate.getTime())
+      ? new Date().toISOString()
+      : parsedDate.toISOString();
+
+    const readingId = `reading_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const resolvedMealTitle =
+      manualCustomMealName.trim() || getMealTypeLabel(manualSelectedMealType);
+
+    handleAddReading(
+      {
+        timestamp: finalTimestamp,
+        value: val,
+        source: 'manual',
+        deviceName: 'Glicosímetro Manual',
+        context: manualContext,
+        notes: manualNotes || `Refeição: ${resolvedMealTitle}`,
+        symptoms: manualSymptoms,
+        mealType: manualSelectedMealType,
+        mealTitle: resolvedMealTitle,
+      },
+      readingId
+    );
+
+    setPendingMealFromReading({
+      readingId,
+      bgValue: val,
+      mealType: manualSelectedMealType,
+      mealTitle: resolvedMealTitle,
+      timestamp: finalTimestamp,
+      context: manualContext,
+      notes: manualNotes,
+    });
+
+    setMealType(manualSelectedMealType);
+    setMealTitle(resolvedMealTitle);
+
+    // Reset modal inputs and close modal
+    setManualBgValue('');
+    setManualNotes('');
+    setManualSymptoms([]);
+    setManualCustomMealName('');
+    setManualRegisterMealFoods(false);
+    setManualDateTime(toLocalDateTimeInputString());
+    setIsManualReadingModalOpen(false);
+
+    // Navigate directly to Meals page (Meu Prato)
+    setActivePage('meals');
+    setMealsSubTab('plate');
+
+    triggerToast(
+      'Medição Salva! Monte sua Refeição',
+      `Glicemia de ${val} mg/dL registrada. Escolha uma refeição favorita ou adicione os alimentos abaixo para calcular o Bolus!`
+    );
   };
 
   // Register an insulin application (from the Aplicações page) and optionally link to a reading
@@ -839,6 +1202,23 @@ export default function App() {
     setDoses((prev) => [newDose, ...prev]);
     if (currentUser) {
       saveDoseToFirestore(currentUser.uid, newDose);
+    }
+
+    // Auto-sync with Daily Routine Goals if this is a Basal insulin application
+    if (doseData.type === 'basal') {
+      const doseDateObj = new Date(doseData.timestamp);
+      const doseDateKey = getLocalDateKey(doseDateObj);
+      const doseTimeStr = doseDateObj.toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+      });
+      handleUpdateRoutine({
+        date: doseDateKey,
+        basalTaken: true,
+        basalUnits: doseData.units,
+        basalTime: doseTimeStr,
+      });
     }
 
     // If linked to a glucose reading, update that reading with the applied insulin info
@@ -862,9 +1242,6 @@ export default function App() {
         })
       );
     }
-
-    const nextRec = getNextRecommendedSite([newDose, ...doses]);
-    setSelectedSite(nextRec.site.id);
 
     triggerToast(
       'Aplicação Registrada!',
@@ -907,12 +1284,112 @@ export default function App() {
     if (!val || val <= 0) return;
 
     const parsedDate = manualDateTime ? new Date(manualDateTime) : new Date();
-    const finalTimestamp = isNaN(parsedDate.getTime()) ? new Date().toISOString() : parsedDate.toISOString();
+    const finalTimestamp = isNaN(parsedDate.getTime())
+      ? new Date().toISOString()
+      : parsedDate.toISOString();
 
     const readingId = `reading_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+
+    // CASE 1: É UMA REFEIÇÃO
+    if (manualFlowMode === 'meal') {
+      // Se o usuário marcou que quer cadastrar os alimentos, redireciona direto para a página de Refeições!
+      if (manualRegisterMealFoods) {
+        handleRedirectFromModalToMealsPage();
+        return;
+      }
+
+      const mealId = `meal_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+      const resolvedMealTitle =
+        manualCustomMealName.trim() || getMealTypeLabel(manualSelectedMealType);
+
+      const newMealRecord: MealRecord = {
+        id: mealId,
+        timestamp: finalTimestamp,
+        mealType: manualSelectedMealType,
+        title: resolvedMealTitle,
+        items: [],
+        totalCarbs: 0,
+        totalProtein: 0,
+        totalFat: 0,
+        totalCalories: 0,
+        linkedReadingId: readingId,
+        bgAtMeal: val,
+      };
+
+      setMeals((prev) => [newMealRecord, ...prev]);
+      if (currentUser) {
+        saveMealToFirestore(currentUser.uid, newMealRecord);
+      }
+
+      handleAddReading(
+        {
+          timestamp: finalTimestamp,
+          value: val,
+          source: 'manual',
+          deviceName: 'Glicosímetro Manual',
+          context: manualContext,
+          notes: manualNotes || `Refeição: ${resolvedMealTitle}`,
+          symptoms: manualSymptoms,
+          linkedMealId: mealId,
+          mealType: manualSelectedMealType,
+          mealTitle: resolvedMealTitle,
+          mealCarbs: 0,
+        },
+        readingId
+      );
+
+      // Map mealType to Bolus time of day
+      const mappedPeriod: 'morning' | 'afternoon' | 'night' =
+        manualSelectedMealType === 'cafe'
+          ? 'morning'
+          : manualSelectedMealType === 'jantar' || manualSelectedMealType === 'ceia'
+          ? 'night'
+          : 'afternoon';
+
+      setBolusBgInput(String(val));
+      setBolusCarbsInput(0);
+      setBolusTimeOfDay(mappedPeriod);
+
+      const previewCalc = calculateBolus(0, val, profile, doses, mappedPeriod);
+      setDoseUnitsInput(String(previewCalc.roundedBolus));
+      setDoseTypeInput('rapid');
+      setBolusWillApplyDose(previewCalc.roundedBolus > 0);
+      setPendingBolusContext({
+        readingId,
+        mealId,
+        bgValue: val,
+        mealTitle: resolvedMealTitle,
+        mealCarbs: 0,
+        timestamp: finalTimestamp,
+        context: manualContext,
+      });
+
+      setIsPostMealTimerActive(true);
+      setPostMealMinutesLeft(120);
+
+      // Reset modal state
+      setManualBgValue('');
+      setManualNotes('');
+      setManualSymptoms([]);
+      setManualCustomMealName('');
+      setManualDateTime(toLocalDateTimeInputString());
+      setIsManualReadingModalOpen(false);
+
+      // Navigate directly to Bolus Calculator
+      setActivePage('bolus');
+      triggerToast(
+        'Medição e Refeição Salvas!',
+        `Direcionado para a Calculadora de Bolus para calcular a correção (${val} mg/dL).`
+      );
+      return;
+    }
+
+    // CASE 2: PÓS-REFEIÇÃO OU MEDIÇÃO AVULSA -> Registra Medição e Aplicação (ou não) + Dose
     const appliedUnits = manualDidApplyInsulin ? parseFloat(manualInsulinUnits) : 0;
     const hasValidDose = manualDidApplyInsulin && appliedUnits > 0;
-    const doseId = hasValidDose ? `dose_${Date.now()}_${Math.random().toString(36).substring(2, 6)}` : undefined;
+    const doseId = hasValidDose
+      ? `dose_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`
+      : undefined;
     const insulinName =
       manualInsulinType === 'rapid' ? profile.rapidInsulinName : profile.basalInsulinName;
 
@@ -941,8 +1418,12 @@ export default function App() {
         insulinName,
         units: appliedUnits,
         bgAtTime: val,
-        injectionSite: selectedSite,
-        notes: manualNotes || `Aplicação registrada após medição (${getGlucoseContextLabel(manualContext)})`,
+        notes:
+          manualNotes ||
+          `Aplicação registrada após medição (${getGlucoseContextLabel(
+            manualContext,
+            profile.customMoments
+          )})`,
         linkedReadingId: readingId,
         context: manualContext,
       };
@@ -950,15 +1431,30 @@ export default function App() {
       if (currentUser) {
         saveDoseToFirestore(currentUser.uid, newDose);
       }
-      const nextRec = getNextRecommendedSite([newDose, ...doses]);
-      setSelectedSite(nextRec.site.id);
+
+      if (manualInsulinType === 'basal') {
+        const doseDateObj = new Date(finalTimestamp);
+        handleUpdateRoutine({
+          date: getLocalDateKey(doseDateObj),
+          basalTaken: true,
+          basalUnits: appliedUnits,
+          basalTime: doseDateObj.toLocaleTimeString([], {
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: false,
+          }),
+        });
+      }
 
       triggerToast(
         'Medição + Aplicação Salvas!',
         `Glicemia ${val} mg/dL com aplicação de ${appliedUnits}U (${insulinName}) registrada.`
       );
     } else {
-      triggerToast('Medição Registrada!', `Glicemia de ${val} mg/dL salva (sem aplicação de insulina).`);
+      triggerToast(
+        'Medição Registrada!',
+        `Glicemia de ${val} mg/dL salva (sem aplicação de insulina).`
+      );
     }
 
     setManualBgValue('');
@@ -980,9 +1476,9 @@ export default function App() {
       const totalGrams = newCount * food.gramsPerServing;
       item.portionCount = newCount;
       item.totalGrams = totalGrams;
-      item.carbs = Math.round((food.carbsPer100g * totalGrams) / 100 * 10) / 10;
-      item.protein = Math.round((food.proteinPer100g * totalGrams) / 100 * 10) / 10;
-      item.fat = Math.round((food.fatPer100g * totalGrams) / 100 * 10) / 10;
+      item.carbs = Math.round(((food.carbsPer100g * totalGrams) / 100) * 10) / 10;
+      item.protein = Math.round(((food.proteinPer100g * totalGrams) / 100) * 10) / 10;
+      item.fat = Math.round(((food.fatPer100g * totalGrams) / 100) * 10) / 10;
       item.calories = Math.round((food.caloriesPer100g * totalGrams) / 100);
       setCurrentPlate(updated);
     } else {
@@ -994,14 +1490,17 @@ export default function App() {
         portionCount: 1,
         servingDescription: food.servingDescription,
         totalGrams,
-        carbs: Math.round((food.carbsPer100g * totalGrams) / 100 * 10) / 10,
-        protein: Math.round((food.proteinPer100g * totalGrams) / 100 * 10) / 10,
-        fat: Math.round((food.fatPer100g * totalGrams) / 100 * 10) / 10,
+        carbs: Math.round(((food.carbsPer100g * totalGrams) / 100) * 10) / 10,
+        protein: Math.round(((food.proteinPer100g * totalGrams) / 100) * 10) / 10,
+        fat: Math.round(((food.fatPer100g * totalGrams) / 100) * 10) / 10,
         calories: Math.round((food.caloriesPer100g * totalGrams) / 100),
       };
       setCurrentPlate([...currentPlate, newItem]);
     }
-    setMealsSubTab('plate');
+    triggerToast(
+      `+ ${food.name} adicionado ao prato`,
+      'Continue adicionando outros alimentos ou clique em Ver Meu Prato.'
+    );
   };
 
   const handleUpdatePortion = (itemId: string, newCount: number) => {
@@ -1023,9 +1522,9 @@ export default function App() {
           ...item,
           portionCount: newCount,
           totalGrams,
-          carbs: Math.round((carbsPer100 * totalGrams) / 100 * 10) / 10,
-          protein: Math.round((proteinPer100 * totalGrams) / 100 * 10) / 10,
-          fat: Math.round((fatPer100 * totalGrams) / 100 * 10) / 10,
+          carbs: Math.round(((carbsPer100 * totalGrams) / 100) * 10) / 10,
+          protein: Math.round(((proteinPer100 * totalGrams) / 100) * 10) / 10,
+          fat: Math.round(((fatPer100 * totalGrams) / 100) * 10) / 10,
           calories: Math.round((calPer100 * totalGrams) / 100),
         };
       }
@@ -1034,26 +1533,120 @@ export default function App() {
     setCurrentPlate(updated);
   };
 
-  const plateTotalCarbs = Math.round(
-    currentPlate.reduce((acc, curr) => acc + curr.carbs, 0) * 10
-  ) / 10;
-  const plateTotalProtein = Math.round(
-    currentPlate.reduce((acc, curr) => acc + curr.protein, 0) * 10
-  ) / 10;
-  const plateTotalFat = Math.round(
-    currentPlate.reduce((acc, curr) => acc + curr.fat, 0) * 10
-  ) / 10;
+  const plateTotalCarbs =
+    Math.round(currentPlate.reduce((acc, curr) => acc + curr.carbs, 0) * 10) / 10;
+  const plateTotalProtein =
+    Math.round(currentPlate.reduce((acc, curr) => acc + curr.protein, 0) * 10) / 10;
+  const plateTotalFat =
+    Math.round(currentPlate.reduce((acc, curr) => acc + curr.fat, 0) * 10) / 10;
   const plateTotalCalories = Math.round(
     currentPlate.reduce((acc, curr) => acc + curr.calories, 0)
   );
 
+  // Favorite Meals with Nicknames ("Apelidos") handlers
+  const syncFavoritesToProfile = (nextFavorites: FavoriteMeal[]) => {
+    setFavorites(nextFavorites);
+    const updatedProfile: PatientProfile = {
+      ...profile,
+      favoriteMeals: nextFavorites,
+    };
+    setProfile(updatedProfile);
+    if (currentUser) {
+      saveProfileToFirestore(currentUser.uid, updatedProfile);
+    }
+  };
+
+  const handleSaveCurrentPlateAsFavorite = (customNickname?: string) => {
+    if (currentPlate.length === 0) {
+      triggerToast('Prato Vazio', 'Adicione pelo menos 1 alimento ao prato para favoritar.');
+      return;
+    }
+    const nick = (customNickname ?? favoriteNicknameInput).trim() || mealTitle || 'Refeição Favorita';
+    const newFav: FavoriteMeal = {
+      id: `fav_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      name: nick,
+      nickname: nick,
+      mealType,
+      items: currentPlate.map((it) => ({ ...it })),
+      totalCarbs: plateTotalCarbs,
+      totalProtein: plateTotalProtein,
+      totalFat: plateTotalFat,
+      totalCalories: plateTotalCalories,
+    };
+    const nextList = [newFav, ...favorites];
+    syncFavoritesToProfile(nextList);
+    setFavoriteNicknameInput('');
+    triggerToast(
+      'Refeição Favoritada!',
+      `Apelido "${nick}" (${plateTotalCarbs}g CHO) salvo para acesso em 1 clique.`
+    );
+  };
+
+  const handleSaveHistoricalMealAsFavorite = (meal: MealRecord) => {
+    const nick = meal.title || getMealTypeLabel(meal.mealType);
+    const newFav: FavoriteMeal = {
+      id: `fav_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      name: nick,
+      nickname: nick,
+      mealType: meal.mealType,
+      items: meal.items.map((it) => ({ ...it })),
+      totalCarbs: meal.totalCarbs,
+      totalProtein: meal.totalProtein,
+      totalFat: meal.totalFat,
+      totalCalories: meal.totalCalories,
+    };
+    const nextList = [newFav, ...favorites];
+    syncFavoritesToProfile(nextList);
+    triggerToast(
+      'Salva nas Favoritas!',
+      `"${nick}" (${meal.totalCarbs}g CHO) foi adicionada às suas refeições favoritas.`
+    );
+  };
+
+  const handleSelectFavoriteToPlate = (fav: FavoriteMeal) => {
+    const clonedItems: MealPlateItem[] = fav.items.map((it, idx) => ({
+      ...it,
+      id: `plate_${Date.now()}_${idx}_${Math.random().toString(36).substring(2, 5)}`,
+    }));
+    setCurrentPlate(clonedItems);
+    setMealTitle(fav.nickname || fav.name);
+    setMealType(fav.mealType);
+    setMealsSubTab('plate');
+    triggerToast(
+      `Favorita "${fav.nickname || fav.name}" Carregada!`,
+      'Você pode alterar as porções (+ / -), remover itens ou adicionar novos alimentos antes de salvar.'
+    );
+  };
+
+  const handleUpdateFavoriteNickname = (favId: string, nextNickname: string) => {
+    const trimmed = nextNickname.trim();
+    if (!trimmed) return;
+    const nextList = favorites.map((f) =>
+      f.id === favId ? { ...f, name: trimmed, nickname: trimmed } : f
+    );
+    syncFavoritesToProfile(nextList);
+    setEditingFavoriteId(null);
+    setEditingFavoriteNickname('');
+    triggerToast('Apelido Atualizado!', `Refeição favorita renomeada para "${trimmed}".`);
+  };
+
+  const handleDeleteFavoriteMeal = (favId: string) => {
+    const nextList = favorites.filter((f) => f.id !== favId);
+    syncFavoritesToProfile(nextList);
+    triggerToast('Favorita Removida', 'A refeição foi removida dos seus favoritos.');
+  };
+
   const handleSaveMealRecord = () => {
     if (currentPlate.length === 0) return;
+    const mealId = `meal_${Date.now()}`;
+    const effectiveBg = pendingMealFromReading?.bgValue ?? latestReading?.value;
+    const effectiveTimestamp = pendingMealFromReading?.timestamp || new Date().toISOString();
+
     const newMeal: MealRecord = {
-      id: `meal_${Date.now()}`,
-      timestamp: new Date().toISOString(),
+      id: mealId,
+      timestamp: effectiveTimestamp,
       mealType,
-      title: mealTitle || 'Refeição Registrada',
+      title: mealTitle || getMealTypeLabel(mealType),
       items: currentPlate,
       totalCarbs: plateTotalCarbs,
       totalProtein: plateTotalProtein,
@@ -1061,60 +1654,206 @@ export default function App() {
       totalCalories: plateTotalCalories,
       aiAnalysisNotes: aiNotesForCurrentMeal,
       glycemicImpact: glycemicImpactCurrentMeal,
+      bgAtMeal: effectiveBg,
+      linkedReadingId: pendingMealFromReading?.readingId,
     };
 
     setMeals([newMeal, ...meals]);
     if (currentUser) {
       saveMealToFirestore(currentUser.uid, newMeal);
     }
-    setBolusCarbsInput(plateTotalCarbs);
-    if (latestReading) {
-      setBolusBgInput(String(latestReading.value));
+
+    // If this meal was initiated from a glucose reading, link the meal back to that reading
+    if (pendingMealFromReading?.readingId) {
+      const targetReadingId = pendingMealFromReading.readingId;
+      setReadings((prev) =>
+        prev.map((r) => {
+          if (r.id === targetReadingId) {
+            const updatedReading: GlucoseReading = {
+              ...r,
+              linkedMealId: mealId,
+              mealType,
+              mealTitle: newMeal.title,
+              mealCarbs: plateTotalCarbs,
+              notes: r.notes || `Refeição: ${newMeal.title} (${plateTotalCarbs}g CHO)`,
+            };
+            if (currentUser) {
+              saveReadingToFirestore(currentUser.uid, updatedReading);
+            }
+            return updatedReading;
+          }
+          return r;
+        })
+      );
     }
 
+    setBolusCarbsInput(plateTotalCarbs);
+    if (effectiveBg) {
+      setBolusBgInput(String(effectiveBg));
+    }
+
+    const mappedPeriod: 'morning' | 'afternoon' | 'night' =
+      mealType === 'cafe'
+        ? 'morning'
+        : mealType === 'jantar' || mealType === 'ceia'
+        ? 'night'
+        : 'afternoon';
+    setBolusTimeOfDay(mappedPeriod);
+
+    const previewCalc = calculateBolus(
+      plateTotalCarbs,
+      effectiveBg,
+      profile,
+      doses,
+      mappedPeriod
+    );
+    setDoseUnitsInput(String(previewCalc.roundedBolus));
+    setBolusWillApplyDose(true);
+    setPendingBolusContext({
+      readingId: pendingMealFromReading?.readingId,
+      mealId,
+      bgValue: effectiveBg,
+      mealTitle: newMeal.title,
+      mealCarbs: plateTotalCarbs,
+      timestamp: newMeal.timestamp,
+      context: pendingMealFromReading?.context,
+    });
+
+    setPendingMealFromReading(null);
+    setCurrentPlate([]);
     setIsPostMealTimerActive(true);
     setPostMealMinutesLeft(120);
 
-    sendWebNotification('🍽️ Refeição Registrada!', {
-      body: `Você registrou ${plateTotalCarbs}g CHO. Um lembrete será enviado em 2 horas para medir a glicose.`,
-    });
+    if (notificationPrefs.enabled && notificationPrefs.postMealTimer) {
+      sendWebNotification('🍽️ Refeição Registrada!', {
+        body: `Você registrou ${plateTotalCarbs}g CHO. Um lembrete será enviado em 2 horas para medir a glicose.`,
+      });
+    }
     triggerToast(
       'Refeição Salva com Sucesso',
-      `Lembrete de 2 horas ativado. Próximo passo: Calcular o Bolus de Insulina!`
+      `Redirecionado para a Calculadora de Bolus para calcular a correção e dose!`
     );
 
     setActiveTab('bolus');
-    setBolusSubTab('calculator');
   };
 
   const handleLogInsulinDose = () => {
+    if (!bolusWillApplyDose) {
+      setPendingBolusContext(null);
+      triggerToast(
+        'Registro Concluído',
+        'Medição e refeição mantidas salvas (sem aplicação de insulina neste momento).'
+      );
+      setActivePage('glucose');
+      return;
+    }
+
     const units = Number(doseUnitsInput);
     if (!units || units <= 0) return;
 
+    const doseId = `dose_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+    const insulinName =
+      doseTypeInput === 'rapid' ? profile.rapidInsulinName : profile.basalInsulinName;
+    const effectiveBg =
+      Number(bolusBgInput) > 0
+        ? Number(bolusBgInput)
+        : pendingBolusContext?.bgValue ?? latestReading?.value;
+    const effectiveTimestamp = pendingBolusContext?.timestamp || new Date().toISOString();
+
     const newDose: InsulinDoseRecord = {
-      id: `dose_${Date.now()}`,
-      timestamp: new Date().toISOString(),
+      id: doseId,
+      timestamp: effectiveTimestamp,
       type: doseTypeInput,
-      insulinName: doseTypeInput === 'rapid' ? profile.rapidInsulinName : profile.basalInsulinName,
+      insulinName,
       units,
-      injectionSite: selectedSite,
-      notes: doseNotesInput,
-      bgAtTime: latestReading ? latestReading.value : undefined,
+      foodBolusUnits: bolusResult.foodBolus,
+      correctionBolusUnits: bolusResult.netCorrectionBolus,
+      iobDeductedUnits: bolusResult.iob,
+      notes:
+        doseNotesInput ||
+        (pendingBolusContext?.mealTitle
+          ? `Bolus / Correção: ${pendingBolusContext.mealTitle}${
+              bolusCarbsInput > 0 ? ` (${bolusCarbsInput}g CHO)` : ''
+            }`
+          : 'Calculado na Calculadora de Bolus'),
+      bgAtTime: effectiveBg,
       carbsCovered: doseTypeInput === 'rapid' ? bolusCarbsInput : undefined,
+      linkedReadingId: pendingBolusContext?.readingId,
+      linkedMealId: pendingBolusContext?.mealId,
+      context: pendingBolusContext?.context,
     };
 
-    setDoses([newDose, ...doses]);
+    setDoses((prev) => [newDose, ...prev]);
     if (currentUser) {
       saveDoseToFirestore(currentUser.uid, newDose);
     }
-    setDoseNotesInput('');
 
-    const nextRec = getNextRecommendedSite([newDose, ...doses]);
-    setSelectedSite(nextRec.site.id);
+    // Link back to reading if originated from a measurement
+    if (pendingBolusContext?.readingId) {
+      const targetReadingId = pendingBolusContext.readingId;
+      setReadings((prev) =>
+        prev.map((r) => {
+          if (r.id === targetReadingId) {
+            const updatedReading: GlucoseReading = {
+              ...r,
+              insulinUnitsApplied: units,
+              insulinTypeApplied: doseTypeInput,
+              insulinNameApplied: insulinName,
+              linkedDoseId: doseId,
+            };
+            if (currentUser) {
+              saveReadingToFirestore(currentUser.uid, updatedReading);
+            }
+            return updatedReading;
+          }
+          return r;
+        })
+      );
+    }
+
+    // Link back to meal if originated from a meal
+    if (pendingBolusContext?.mealId) {
+      const targetMealId = pendingBolusContext.mealId;
+      setMeals((prev) =>
+        prev.map((m) => {
+          if (m.id === targetMealId) {
+            const updatedMeal: MealRecord = {
+              ...m,
+              linkedDoseId: doseId,
+              insulinUnitsApplied: units,
+            };
+            if (currentUser) {
+              saveMealToFirestore(currentUser.uid, updatedMeal);
+            }
+            return updatedMeal;
+          }
+          return m;
+        })
+      );
+    }
+
+    if (doseTypeInput === 'basal') {
+      const doseDateObj = new Date(effectiveTimestamp);
+      handleUpdateRoutine({
+        date: getLocalDateKey(doseDateObj),
+        basalTaken: true,
+        basalUnits: units,
+        basalTime: doseDateObj.toLocaleTimeString([], {
+          hour: '2-digit',
+          minute: '2-digit',
+          hour12: false,
+        }),
+      });
+    }
+
+    setDoseNotesInput('');
+    setPendingBolusContext(null);
+    setMonitoringDate(getLocalDateKey(new Date(effectiveTimestamp)));
+    setActivePage('glucose');
 
     triggerToast(
-      'Dose Registrada com Sucesso',
-      `${units}U aplicadas. Próximo rodízio sugerido: ${nextRec.site.name}`
+      'Aplicação de Bolus Salva!',
+      `Dose de ${units}U (${insulinName}) registrada e vinculada no Monitoramento Diário.`
     );
   };
 
@@ -1140,16 +1879,19 @@ export default function App() {
   const stemReadings = [...sortedReadings].slice(0, 6).reverse();
   const safeSelectedStem = Math.min(selectedStemIdx, Math.max(0, stemReadings.length - 1));
 
-  // Daily routine completion calculation
-  const routineGoalsDone = [
-    Boolean(latestReading),
-    routineLog.basalTaken,
-    routineLog.waterMl >= routineLog.waterGoalMl,
-    routineLog.exerciseMinutes > 0,
-    routineLog.footCheckDone,
-    routineLog.bedtimeCheckDone,
-  ].filter(Boolean).length;
-  const routinePct = Math.round((routineGoalsDone / 6) * 100);
+  // Daily routine completion calculation (based on active user-selected goals, without foot check)
+  const activeGoalChecks: boolean[] = [];
+  if (enabledRoutineGoals.fasting) activeGoalChecks.push(Boolean(latestReading));
+  if (enabledRoutineGoals.basal) activeGoalChecks.push(routineLog.basalTaken);
+  if (enabledRoutineGoals.water) activeGoalChecks.push(routineLog.waterMl >= routineLog.waterGoalMl);
+  if (enabledRoutineGoals.exercise) activeGoalChecks.push(routineLog.exerciseMinutes > 0);
+  if (enabledRoutineGoals.bedtime) activeGoalChecks.push(routineLog.bedtimeCheckDone);
+
+  const routineGoalsDone = activeGoalChecks.filter(Boolean).length;
+  const routinePct =
+    activeGoalChecks.length > 0
+      ? Math.round((routineGoalsDone / activeGoalChecks.length) * 100)
+      : 0;
 
   if (isAuthLoading) {
     return (
@@ -1339,16 +2081,6 @@ export default function App() {
                       <span>Cadastrar Nova Conta</span>
                     </button>
                     <button
-                      onClick={() => {
-                        setIsUserMenuOpen(false);
-                        setIsResetAllModalOpen(true);
-                      }}
-                      className="w-full text-left px-3 py-2 rounded-xl text-xs font-semibold text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 flex items-center gap-2"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                      <span>Zerar Tudo (2 Etapas)</span>
-                    </button>
-                    <button
                       onClick={handleLogout}
                       className="w-full text-left px-3 py-2 rounded-xl text-xs font-semibold text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 flex items-center gap-2"
                     >
@@ -1380,11 +2112,18 @@ export default function App() {
         </div>
       </header>
 
-      {/* In-App Toast Alert */}
+      {/* In-App Toast Alert with App Logo Icon */}
       {inAppToast && (
-        <div className="fixed top-16 right-4 z-50 max-w-sm w-full bg-[#111111] text-white p-4 rounded-3xl shadow-2xl animate-in fade-in slide-in-from-top-4 duration-200 flex items-start gap-3">
-          <div className="p-2 bg-[#FF5A36] text-white rounded-full shrink-0">
-            <BellRing className="w-4 h-4" />
+        <div className="fixed top-16 right-4 z-50 max-w-sm w-full bg-[#111111] text-white p-4 rounded-3xl shadow-2xl animate-in fade-in slide-in-from-top-4 duration-200 flex items-start gap-3 border border-white/10">
+          <div className="w-10 h-10 bg-white rounded-2xl p-1.5 flex items-center justify-center shrink-0 shadow-sm">
+            <img
+              src={getAppLogoUrl()}
+              onError={(e) => {
+                (e.currentTarget as HTMLImageElement).src = './assets/aistudio/image_573043af.png';
+              }}
+              alt="Minha Glico"
+              className="w-full h-full object-contain"
+            />
           </div>
           <div className="flex-1 text-xs">
             <h5 className="font-bold text-white">{inAppToast.title}</h5>
@@ -1475,7 +2214,7 @@ export default function App() {
                   </p>
                 </div>
 
-                {/* Resumo Rápido das Metas com Atalho para a Rotina + Botão Zerar Tudo */}
+                {/* Resumo Rápido das Metas com Atalho para a Rotina */}
                 <div className="flex flex-wrap items-center gap-2.5 shrink-0">
                   <div
                     onClick={() => setActivePage('routine')}
@@ -1493,15 +2232,6 @@ export default function App() {
                       </span>
                     </div>
                   </div>
-
-                  <button
-                    onClick={() => setIsResetAllModalOpen(true)}
-                    className="px-3.5 py-3 rounded-2xl bg-red-500/10 hover:bg-red-500/20 text-red-600 dark:text-red-400 text-xs font-bold flex items-center gap-1.5 transition shrink-0"
-                    title="Zerar todos os dados da conta com confirmação em 2 etapas"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                    <span>Zerar Tudo</span>
-                  </button>
                 </div>
               </div>
 
@@ -1627,7 +2357,7 @@ export default function App() {
                       {stemReadings.map((r, idx) => {
                         const heightPct = Math.max(25, Math.min(95, Math.round(((r.value - 50) / 220) * 100)));
                         const isSelected = idx === safeSelectedStem;
-                        const labelText = getGlucoseContextLabel(r.context).split(' ')[0];
+                        const labelText = getGlucoseContextLabel(r.context, profile.customMoments).split(' ')[0];
                         return (
                           <div
                             key={r.id}
@@ -1696,8 +2426,7 @@ export default function App() {
                   <div className="space-y-2 my-auto">
                     <div
                       onClick={() => {
-                        setActiveTab('bolus');
-                        setBolusSubTab('calculator');
+                        setActivePage('bolus');
                       }}
                       className="p-2 rounded-full border border-[#E6C7BE] dark:border-neutral-700 flex items-center gap-2.5 cursor-pointer hover:border-[#FF5A36] transition"
                     >
@@ -1746,8 +2475,7 @@ export default function App() {
                     </button>
                     <button
                       onClick={() => {
-                        setActiveTab('bolus');
-                        setBolusSubTab('calculator');
+                        setActivePage('bolus');
                       }}
                       className="py-2 px-2 rounded-full bg-[#FF5A36] hover:bg-[#e84c29] text-white text-[11px] font-bold transition truncate"
                     >
@@ -1756,41 +2484,40 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* CARD 4: Meu Rodízio + Quick Search Pill Below (lg:col-span-3) */}
+                {/* CARD 4: Minhas Aplicações + Quick Search Pill Below (lg:col-span-3) */}
                 <div className="lg:col-span-3 flex flex-col justify-between gap-3">
                   <div className="bg-white dark:bg-[#161619] rounded-[28px] p-5 shadow-[0_4px_24px_rgba(0,0,0,0.03)] flex-1 flex flex-col justify-between space-y-3">
                     <div className="flex items-center justify-between">
                       <h3 className="font-bold text-[15px] text-[#111111] dark:text-white tracking-tight">
-                        Meu Rodízio
+                        Minhas Aplicações
                       </h3>
-                      <MoreVertical className="w-4 h-4 text-neutral-400" />
-                    </div>
-
-                    {/* Badge + Recommended Site Name */}
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-2 min-w-0">
-                        <span className="w-7 h-7 rounded-full bg-[#F4F4F5] dark:bg-[#222226] text-[10px] font-bold flex items-center justify-center shrink-0">
-                          +8
-                        </span>
-                        <div className="w-8 h-8 rounded-full bg-[#FF5A36]/15 border border-[#FF5A36] text-[#FF5A36] flex items-center justify-center font-bold text-xs shrink-0">
-                          <ShieldCheck className="w-4 h-4" />
-                        </div>
-                        <span className="text-xs font-bold text-[#111111] dark:text-white truncate">
-                          {getNextRecommendedSite(doses).site.name}
-                        </span>
-                      </div>
                       <button
-                        onClick={() => {
-                          setActiveTab('bolus');
-                          setBolusSubTab('rotation');
-                        }}
-                        className="text-neutral-400 hover:text-[#111111] dark:hover:text-white shrink-0"
+                        onClick={() => setActivePage('applications')}
+                        className="text-neutral-400 hover:text-[#FF5A36] transition"
+                        title="Ver Registro de Aplicações"
                       >
-                        <Edit3 className="w-3.5 h-3.5" />
+                        <Syringe className="w-4 h-4" />
                       </button>
                     </div>
 
-                    {/* Monospace Clinical Line (like VISA 5193 ... in reference) */}
+                    {/* Badge + Today's Applications Summary */}
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <div className="w-8 h-8 rounded-full bg-[#FF5A36]/15 border border-[#FF5A36] text-[#FF5A36] flex items-center justify-center font-bold text-xs shrink-0">
+                          <Syringe className="w-4 h-4" />
+                        </div>
+                        <div className="min-w-0">
+                          <span className="text-xs font-bold text-[#111111] dark:text-white block truncate">
+                            {doses.filter((d) => getLocalDateKey(new Date(d.timestamp)) === getLocalDateKey(new Date())).length} aplicações hoje
+                          </span>
+                          <span className="text-[10px] text-neutral-400 block truncate">
+                            {doses[0] ? `Última: ${doses[0].units}U (${doses[0].insulinName})` : 'Nenhuma dose registrada'}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Monospace Clinical Line */}
                     <div className="flex items-center justify-between text-[11px] font-mono tracking-wider pt-1">
                       <span className="text-[#FF5A36] font-extrabold">INSULINA</span>
                       <span className="text-neutral-600 dark:text-neutral-300 font-semibold truncate">
@@ -1800,14 +2527,11 @@ export default function App() {
 
                     {/* Full-width Coral Pill CTA */}
                     <button
-                      onClick={() => {
-                        setActiveTab('bolus');
-                        setBolusSubTab('rotation');
-                      }}
+                      onClick={() => setActivePage('applications')}
                       className="w-full py-2.5 rounded-full bg-[#FF5A36] hover:bg-[#e84c29] text-white text-xs font-bold transition flex items-center justify-center gap-1 shadow-xs"
                     >
                       <Plus className="w-3.5 h-3.5" />
-                      <span>Aplicar Dose</span>
+                      <span>Registrar Aplicação</span>
                     </button>
                   </div>
 
@@ -2050,7 +2774,7 @@ export default function App() {
                   <div className="relative my-3 pt-6">
                     <div className="absolute top-0 left-1/2 -translate-x-1/2 bg-[#111111] text-white text-[10px] font-bold px-3 py-1 rounded-full shadow-md">
                       {latestReading
-                        ? getGlucoseContextLabel(latestReading.context)
+                        ? getGlucoseContextLabel(latestReading.context, profile.customMoments)
                         : 'Hoje'}
                     </div>
                     <svg viewBox="0 0 220 70" className="w-full h-16 overflow-visible">
@@ -2087,22 +2811,26 @@ export default function App() {
                 <div className="lg:col-span-4 bg-white dark:bg-[#161619] rounded-[28px] p-5 shadow-[0_4px_24px_rgba(0,0,0,0.03)] flex flex-col justify-between space-y-3">
                   <div className="flex items-center justify-between">
                     <h3 className="font-bold text-[15px] text-[#111111] dark:text-white tracking-tight">
-                      Momentos Clínicos
+                      Momentos da Medição
                     </h3>
-                    <div className="flex items-center gap-1.5">
-                      <span className="px-2.5 py-0.5 rounded-full bg-[#FF5A36]/15 text-[#FF5A36] text-[11px] font-bold">
-                        ⚡ 8 Momentos
-                      </span>
-                    </div>
+                    <button
+                      onClick={() => {
+                        setIsCustomizingMoments(true);
+                        setIsManualReadingModalOpen(true);
+                      }}
+                      className="px-2.5 py-0.5 rounded-full bg-[#FF5A36]/15 hover:bg-[#FF5A36] text-[#FF5A36] hover:text-white text-[11px] font-bold transition"
+                    >
+                      + Personalizar ({effectiveMoments.length})
+                    </button>
                   </div>
 
                   {/* Quick Moment Chips Row */}
                   <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-0.5">
-                    {GLUCOSE_MOMENTS.slice(0, 4).map((m) => (
+                    {effectiveMoments.slice(0, 5).map((m) => (
                       <button
-                        key={m.value}
+                        key={m.id}
                         onClick={() => {
-                          setManualContext(m.value);
+                          handleSelectManualMoment(m);
                           setIsManualReadingModalOpen(true);
                         }}
                         className="px-2.5 py-1 rounded-full bg-[#F6F6F7] dark:bg-[#222226] hover:bg-[#FF5A36] hover:text-white text-[10px] font-bold transition whitespace-nowrap"
@@ -2112,7 +2840,7 @@ export default function App() {
                     ))}
                   </div>
 
-                  {/* Signature Coral & Soft-Gray Circle Matrix (from "Transactions" card in reference) */}
+                  {/* Signature Coral & Soft-Gray Circle Matrix */}
                   <div className="flex items-center justify-between gap-3 pt-1">
                     <div className="px-3.5 py-2.5 rounded-2xl bg-[#F6F6F7] dark:bg-[#222226] shrink-0">
                       <div className="font-mono font-extrabold text-sm text-[#111111] dark:text-white tabular-nums">
@@ -2128,7 +2856,7 @@ export default function App() {
                         return (
                           <div
                             key={r.id || i}
-                            title={`${r.value} mg/dL (${getGlucoseContextLabel(r.context)})`}
+                            title={`${r.value} mg/dL (${getGlucoseContextLabel(r.context, profile.customMoments)})`}
                             className={`w-7 h-7 rounded-full transition-transform hover:scale-110 ${
                               inTarget
                                 ? 'bg-[#FF5A36]'
@@ -2259,6 +2987,16 @@ export default function App() {
                     </p>
                   </div>
                   <div className="flex flex-wrap gap-2">
+                    <button
+                      onClick={() => {
+                        setIsCustomizingMoments(true);
+                        setIsManualReadingModalOpen(true);
+                      }}
+                      className="px-3.5 py-2 bg-[#F6F6F7] dark:bg-[#222226] hover:bg-[#111111] hover:text-white text-[#111111] dark:text-white text-xs font-bold rounded-full flex items-center gap-1.5 transition"
+                    >
+                      <Settings className="w-3.5 h-3.5 text-[#FF5A36]" />
+                      <span>Personalizar Momentos</span>
+                    </button>
                     <button
                       onClick={() => setActivePage('applications')}
                       className="px-4 py-2 bg-[#F6F6F7] dark:bg-[#222226] hover:bg-[#111111] hover:text-white dark:hover:bg-[#FF5A36] text-[#111111] dark:text-white text-xs font-bold rounded-full flex items-center gap-1.5 transition"
@@ -2397,8 +3135,13 @@ export default function App() {
                                 <div className="min-w-0">
                                   <div className="flex items-center gap-1.5 flex-wrap">
                                     <span className="text-xs font-bold text-[#111111] dark:text-white">
-                                      {getGlucoseContextLabel(r.context)}
+                                      {getGlucoseContextLabel(r.context, profile.customMoments)}
                                     </span>
+                                    {r.mealTitle && (
+                                      <span className="px-2 py-0.5 rounded-full bg-orange-500/15 text-[#FF5A36] text-[10px] font-bold">
+                                        🍽️ {r.mealTitle} {r.mealCarbs ? `(${r.mealCarbs}g CHO)` : ''}
+                                      </span>
+                                    )}
                                   </div>
                                   <div className="flex items-center gap-1.5 text-[11px] text-neutral-400 mt-0.5 font-mono">
                                     <span>
@@ -2440,17 +3183,49 @@ export default function App() {
                                 </span>
                               )}
 
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setPreselectedReadingForDose(r.id);
-                                  setActivePage('applications');
-                                }}
-                                className="text-[11px] font-bold text-[#FF5A36] hover:underline flex items-center gap-1"
-                              >
-                                <Syringe className="w-3 h-3" />
-                                <span>{appliedUnits ? 'Editar / Nova Dose' : '+ Registrar Aplicação'}</span>
-                              </button>
+                              <div className="flex items-center gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setBolusBgInput(String(r.value));
+                                    setBolusCarbsInput(r.mealCarbs || 0);
+                                    const previewCalc = calculateBolus(
+                                      r.mealCarbs || 0,
+                                      r.value,
+                                      profile,
+                                      doses,
+                                      bolusTimeOfDay
+                                    );
+                                    setDoseUnitsInput(String(previewCalc.roundedBolus));
+                                    setBolusWillApplyDose(true);
+                                    setPendingBolusContext({
+                                      readingId: r.id,
+                                      mealId: r.linkedMealId,
+                                      bgValue: r.value,
+                                      mealTitle: r.mealTitle,
+                                      mealCarbs: r.mealCarbs || 0,
+                                      timestamp: r.timestamp,
+                                      context: r.context,
+                                    });
+                                    setActivePage('bolus');
+                                  }}
+                                  className="text-[11px] font-bold text-neutral-600 dark:text-neutral-300 hover:text-[#FF5A36] flex items-center gap-1"
+                                >
+                                  <Calculator className="w-3 h-3" />
+                                  <span>Bolus</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setPreselectedReadingForDose(r.id);
+                                    setActivePage('applications');
+                                  }}
+                                  className="text-[11px] font-bold text-[#FF5A36] hover:underline flex items-center gap-1"
+                                >
+                                  <Syringe className="w-3 h-3" />
+                                  <span>{appliedUnits ? 'Editar / Nova Dose' : '+ Registrar Aplicação'}</span>
+                                </button>
+                              </div>
                             </div>
                           </div>
                         );
@@ -2518,13 +3293,21 @@ export default function App() {
                                     </span>
                                   </td>
                                   <td className="p-3.5">
-                                    <span
-                                      className={`text-[11px] font-bold px-2.5 py-1 rounded-full ${getGlucoseContextBadgeColor(
-                                        r.context
-                                      )}`}
-                                    >
-                                      {getGlucoseContextLabel(r.context)}
-                                    </span>
+                                    <div className="flex flex-wrap items-center gap-1.5">
+                                      <span
+                                        className={`text-[11px] font-bold px-2.5 py-1 rounded-full ${getGlucoseContextBadgeColor(
+                                          r.context,
+                                          profile.customMoments
+                                        )}`}
+                                      >
+                                        {getGlucoseContextLabel(r.context, profile.customMoments)}
+                                      </span>
+                                      {r.mealTitle && (
+                                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-orange-500/15 text-[#FF5A36]">
+                                          🍽️ {r.mealTitle} {r.mealCarbs ? `(${r.mealCarbs}g)` : ''}
+                                        </span>
+                                      )}
+                                    </div>
                                   </td>
                                   <td className="p-3.5">
                                     {appliedUnits && appliedUnits > 0 ? (
@@ -2537,7 +3320,7 @@ export default function App() {
                                         </span>
                                       </div>
                                     ) : (
-                                      <div className="flex items-center gap-2">
+                                      <div className="flex items-center gap-1.5 flex-wrap">
                                         <span className="text-[11px] text-neutral-400">
                                           Não aplicou
                                         </span>
@@ -2550,6 +3333,35 @@ export default function App() {
                                           className="px-2.5 py-1 rounded-full bg-[#F6F6F7] dark:bg-[#222226] hover:bg-[#FF5A36] hover:text-white text-[10px] font-bold text-[#FF5A36] transition"
                                         >
                                           + Aplicar
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            setBolusBgInput(String(r.value));
+                                            setBolusCarbsInput(r.mealCarbs || 0);
+                                            const previewCalc = calculateBolus(
+                                              r.mealCarbs || 0,
+                                              r.value,
+                                              profile,
+                                              doses,
+                                              bolusTimeOfDay
+                                            );
+                                            setDoseUnitsInput(String(previewCalc.roundedBolus));
+                                            setBolusWillApplyDose(true);
+                                            setPendingBolusContext({
+                                              readingId: r.id,
+                                              mealId: r.linkedMealId,
+                                              bgValue: r.value,
+                                              mealTitle: r.mealTitle,
+                                              mealCarbs: r.mealCarbs || 0,
+                                              timestamp: r.timestamp,
+                                              context: r.context,
+                                            });
+                                            setActivePage('bolus');
+                                          }}
+                                          className="px-2.5 py-1 rounded-full bg-[#F6F6F7] dark:bg-[#222226] hover:bg-[#111111] hover:text-white dark:hover:bg-white dark:hover:text-[#111111] text-[10px] font-bold text-neutral-600 dark:text-neutral-300 transition"
+                                        >
+                                          Calcular Bolus
                                         </button>
                                       </div>
                                     )}
@@ -2601,7 +3413,6 @@ export default function App() {
                 onSelectDate={(d) => setMonitoringDate(d)}
                 onAddDose={handleAddDoseFromApplications}
                 onDeleteDose={handleDeleteDose}
-                onOpenRotationMap={() => setActivePage('rotation')}
                 preselectedReadingId={preselectedReadingForDose}
                 onClearPreselectedReading={() => setPreselectedReadingForDose(null)}
               />
@@ -2609,7 +3420,7 @@ export default function App() {
           )}
 
           {/* ============================================================== */}
-          {/* TAB 3: REFEIÇÕES & IA (PRATO, BUSCA TACO/SBD, CHO)             */}
+          {/* TAB 3: REFEIÇÕES & IA (PRATO, FAVORITAS COM APELIDO, TACO)     */}
           {/* ============================================================== */}
           {activeTab === 'meals' && (
             <motion.div
@@ -2620,6 +3431,32 @@ export default function App() {
               transition={{ duration: 0.18, ease: 'easeOut' }}
               className="space-y-4"
             >
+              {/* Banner quando direcionado ao clicar em "Sim, cadastrar alimentos" na Medição */}
+              {pendingMealFromReading && (
+                <div className="bg-[#FF5A36]/10 border border-[#FF5A36]/30 rounded-[28px] p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="px-2.5 py-0.5 rounded-full bg-[#FF5A36] text-white text-[10px] font-extrabold uppercase">
+                        Medição Salva: {pendingMealFromReading.bgValue} mg/dL
+                      </span>
+                      <h5 className="font-extrabold text-sm text-[#111111] dark:text-white">
+                        🍽️ Cadastre os alimentos de: {pendingMealFromReading.mealTitle}
+                      </h5>
+                    </div>
+                    <p className="text-xs text-neutral-600 dark:text-neutral-300">
+                      Escolha uma <strong>Refeição Favorita pelo apelido</strong> abaixo (você pode alterar os itens depois de escolher) ou busque alimentos na Tabela TACO. Ao finalizar, clique em <strong>Salvar Refeição & Calcular Bolus</strong>.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setPendingMealFromReading(null)}
+                    className="text-xs font-bold text-neutral-500 hover:text-[#111111] dark:hover:text-white self-end sm:self-center shrink-0"
+                  >
+                    Desvincular medição
+                  </button>
+                </div>
+              )}
+
               {/* Sub-tab navigation */}
               <div className="flex flex-wrap sm:flex-nowrap items-center justify-between gap-2 bg-white dark:bg-[#161619] p-2 rounded-full shadow-[0_4px_24px_rgba(0,0,0,0.03)] max-w-full">
                 <div className="flex items-center gap-1 flex-wrap xs:flex-nowrap min-w-0">
@@ -2641,17 +3478,18 @@ export default function App() {
                         : 'text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800'
                     }`}
                   >
-                    Buscar TACO
+                    + Buscar Alimentos (TACO)
                   </button>
                   <button
                     onClick={() => setMealsSubTab('favorites')}
-                    className={`px-4 py-2 rounded-full text-xs font-bold transition ${
+                    className={`px-4 py-2 rounded-full text-xs font-bold transition flex items-center gap-1 ${
                       mealsSubTab === 'favorites'
                         ? 'bg-[#111111] dark:bg-[#FF5A36] text-white'
                         : 'text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800'
                     }`}
                   >
-                    Favoritas
+                    <Star className="w-3.5 h-3.5" />
+                    <span>Favoritas ({favorites.length})</span>
                   </button>
                 </div>
 
@@ -2664,28 +3502,71 @@ export default function App() {
                 </button>
               </div>
 
+              {/* Barra de Acesso Rápido às Refeições Favoritas por Apelido */}
+              {favorites.length > 0 && (
+                <div className="bg-white dark:bg-[#161619] rounded-[24px] p-4 shadow-[0_4px_24px_rgba(0,0,0,0.03)] space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-extrabold text-[#111111] dark:text-white flex items-center gap-1.5">
+                      <Star className="w-3.5 h-3.5 text-[#FF5A36] fill-[#FF5A36]" />
+                      <span>Acesso Rápido: Refeições Favoritas (clique no apelido e altere se quiser)</span>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setMealsSubTab('favorites')}
+                      className="text-[11px] font-bold text-[#FF5A36] hover:underline"
+                    >
+                      Gerenciar apelidos
+                    </button>
+                  </div>
+                  <div className="flex items-center gap-2 overflow-x-auto pb-1">
+                    {favorites.map((fav) => (
+                      <button
+                        key={fav.id}
+                        type="button"
+                        onClick={() => handleSelectFavoriteToPlate(fav)}
+                        className="px-3.5 py-2 rounded-2xl bg-[#F6F6F7] dark:bg-[#222226] hover:bg-[#FF5A36] hover:text-white text-xs font-bold transition flex items-center gap-2 shrink-0 group"
+                      >
+                        <span>⭐ {fav.nickname || fav.name}</span>
+                        <span className="font-mono text-[11px] px-2 py-0.5 rounded-full bg-white dark:bg-[#161619] text-[#FF5A36] group-hover:bg-white/20 group-hover:text-white">
+                          {fav.totalCarbs}g CHO
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {/* Sub-view: Current Plate Builder */}
               {mealsSubTab === 'plate' && (
                 <div className="bg-white dark:bg-[#161619] rounded-[28px] p-5 sm:p-6 shadow-[0_4px_24px_rgba(0,0,0,0.03)] space-y-4">
-                  <div className="flex items-center justify-between pb-3 border-b border-neutral-100 dark:border-neutral-800">
-                    <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-neutral-100 dark:border-neutral-800">
+                    <div className="flex items-center gap-2 flex-wrap">
                       <input
                         type="text"
                         value={mealTitle}
                         onChange={(e) => setMealTitle(e.target.value)}
-                        className="font-bold text-base bg-transparent border-b border-dashed border-neutral-300 dark:border-neutral-700 px-1 py-0.5 focus:outline-hidden"
+                        placeholder="Nome ou Apelido da Refeição"
+                        className="font-bold text-base bg-transparent border-b border-dashed border-neutral-300 dark:border-neutral-700 px-1 py-0.5 focus:outline-hidden text-[#111111] dark:text-white"
                       />
                       <select
                         value={mealType}
                         onChange={(e) => setMealType(e.target.value as any)}
-                        className="text-xs bg-[#F6F6F7] dark:bg-[#222226] rounded-full px-3 py-1.5 font-semibold"
+                        className="text-xs bg-[#F6F6F7] dark:bg-[#222226] rounded-full px-3 py-1.5 font-semibold text-[#111111] dark:text-white"
                       >
                         <option value="cafe">Café da Manhã</option>
                         <option value="almoco">Almoço</option>
                         <option value="lanche">Lanche</option>
                         <option value="jantar">Jantar</option>
                         <option value="ceia">Ceia</option>
+                        <option value="outro">Outra Refeição</option>
                       </select>
+                      <button
+                        type="button"
+                        onClick={() => setMealsSubTab('search')}
+                        className="px-3 py-1.5 rounded-full bg-[#FF5A36]/15 text-[#FF5A36] text-xs font-bold hover:bg-[#FF5A36] hover:text-white transition"
+                      >
+                        + Adicionar Alimentos
+                      </button>
                     </div>
 
                     <div className="text-right">
@@ -2722,11 +3603,20 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* Plate items list */}
-                  <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
+                  {/* Plate items list (editable even after selecting a Favorite!) */}
+                  <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
                     {currentPlate.length === 0 ? (
-                      <div className="py-8 text-center text-xs text-neutral-400">
-                        Prato vazio. Clique em &ldquo;Buscar TACO&rdquo; ou &ldquo;Foto IA&rdquo; para montar sua refeição.
+                      <div className="py-8 text-center space-y-3">
+                        <p className="text-xs text-neutral-400">
+                          Prato vazio. Escolha uma <strong>Refeição Favorita</strong> acima ou clique abaixo para buscar alimentos na Tabela TACO.
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => setMealsSubTab('search')}
+                          className="px-4 py-2 rounded-full bg-[#111111] dark:bg-[#FF5A36] text-white text-xs font-bold hover:opacity-90 transition"
+                        >
+                          + Buscar Alimentos na Tabela TACO
+                        </button>
                       </div>
                     ) : (
                       currentPlate.map((item) => (
@@ -2739,7 +3629,7 @@ export default function App() {
                               {item.name}
                             </p>
                             <span className="text-[10px] text-neutral-500">
-                              {item.totalGrams}g ({item.portionCount} porção)
+                              {item.totalGrams}g ({item.portionCount} porção) — você pode ajustar ao lado
                             </span>
                           </div>
                           <div className="flex items-center gap-3">
@@ -2763,6 +3653,14 @@ export default function App() {
                             <span className="font-mono font-extrabold text-[#FF5A36] w-12 text-right">
                               {item.carbs}g
                             </span>
+                            <button
+                              type="button"
+                              onClick={() => handleUpdatePortion(item.id, 0)}
+                              className="text-neutral-400 hover:text-red-500 p-1"
+                              title="Remover item do prato"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
                           </div>
                         </div>
                       ))
@@ -2770,13 +3668,43 @@ export default function App() {
                   </div>
 
                   {currentPlate.length > 0 && (
-                    <button
-                      onClick={handleSaveMealRecord}
-                      className="w-full py-3 bg-[#FF5A36] hover:bg-[#e84c29] text-white font-bold text-xs rounded-full transition flex items-center justify-center gap-2 shadow-sm"
-                    >
-                      <Check className="w-4 h-4" />
-                      <span>Salvar Refeição & Calcular Bolus ({plateTotalCarbs}g CHO)</span>
-                    </button>
+                    <div className="space-y-3 pt-2 border-t border-neutral-100 dark:border-neutral-800">
+                      {/* Favoritar este prato com um apelido personalizado */}
+                      <div className="p-3.5 rounded-2xl bg-[#F6F6F7] dark:bg-[#222226] flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                        <div className="flex items-center gap-2 text-xs font-bold text-[#111111] dark:text-white">
+                          <Star className="w-4 h-4 text-[#FF5A36] shrink-0" />
+                          <span>Favoritar esta refeição com apelido:</span>
+                        </div>
+                        <div className="flex items-center gap-2 flex-1 max-w-md">
+                          <input
+                            type="text"
+                            placeholder={`Apelido (ex: ${mealTitle} Campeão, Café Rápido...)`}
+                            value={favoriteNicknameInput}
+                            onChange={(e) => setFavoriteNicknameInput(e.target.value)}
+                            className="flex-1 px-3.5 py-2 rounded-full bg-white dark:bg-[#161619] text-xs font-semibold text-[#111111] dark:text-white focus:outline-hidden focus:ring-2 focus:ring-[#FF5A36]"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => handleSaveCurrentPlateAsFavorite()}
+                            className="px-4 py-2 rounded-full bg-[#111111] dark:bg-white text-white dark:text-[#111111] text-xs font-bold shrink-0 hover:opacity-90 transition"
+                          >
+                            ⭐ Favoritar
+                          </button>
+                        </div>
+                      </div>
+
+                      <button
+                        onClick={handleSaveMealRecord}
+                        className="w-full py-3.5 bg-[#FF5A36] hover:bg-[#e84c29] text-white font-bold text-xs sm:text-sm rounded-full transition flex items-center justify-center gap-2 shadow-sm"
+                      >
+                        <Check className="w-4 h-4" />
+                        <span>
+                          {pendingMealFromReading
+                            ? `Salvar Refeição (${plateTotalCarbs}g CHO) + Medição (${pendingMealFromReading.bgValue} mg/dL) & Calcular Bolus`
+                            : `Salvar Refeição & Calcular Bolus (${plateTotalCarbs}g CHO)`}
+                        </span>
+                      </button>
+                    </div>
                   )}
                 </div>
               )}
@@ -2784,6 +3712,36 @@ export default function App() {
               {/* Sub-view: Food Search */}
               {mealsSubTab === 'search' && (
                 <div className="bg-white dark:bg-[#161619] rounded-[28px] p-5 shadow-[0_4px_24px_rgba(0,0,0,0.03)] space-y-4">
+                  {/* Resumo ao vivo do Meu Prato enquanto busca alimentos */}
+                  {currentPlate.length > 0 && (
+                    <div className="p-3.5 rounded-2xl bg-[#FF5A36]/10 border border-[#FF5A36]/30 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                      <div className="flex items-center gap-2 text-xs">
+                        <Utensils className="w-4 h-4 text-[#FF5A36] shrink-0" />
+                        <span className="font-bold text-[#111111] dark:text-white">
+                          Meu Prato ({currentPlate.length}{' '}
+                          {currentPlate.length === 1 ? 'item' : 'itens'}):{' '}
+                          <strong className="text-[#FF5A36] font-mono">{plateTotalCarbs}g CHO</strong>
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <button
+                          type="button"
+                          onClick={() => setMealsSubTab('plate')}
+                          className="px-3.5 py-1.5 rounded-full bg-[#111111] dark:bg-white text-white dark:text-[#111111] text-[11px] font-bold transition"
+                        >
+                          Ver Prato / Ajustar Porções
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleSaveMealRecord}
+                          className="px-3.5 py-1.5 rounded-full bg-[#FF5A36] text-white text-[11px] font-bold transition"
+                        >
+                          Salvar Refeição & Calcular Bolus
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
                   <div className="relative">
                     <Search className="w-4 h-4 text-[#FF5A36] absolute left-4 top-3" />
                     <input
@@ -2796,71 +3754,271 @@ export default function App() {
                   </div>
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 max-h-80 overflow-y-auto pr-1">
-                    {filteredFoods.slice(0, 20).map((food) => (
-                      <div
-                        key={food.id}
-                        className="p-3.5 bg-[#F6F6F7] dark:bg-[#222226] rounded-2xl flex items-center justify-between text-xs"
-                      >
-                        <div className="min-w-0 flex-1 mr-2">
-                          <p className="font-bold truncate text-[#111111] dark:text-white">
-                            {food.name}
-                          </p>
-                          <span className="text-[10px] text-neutral-500 block truncate">
-                            {food.servingDescription}
-                          </span>
-                          <span className="font-mono font-extrabold text-[#FF5A36] text-[11px]">
-                            {Math.round(((food.carbsPer100g * food.gramsPerServing) / 100) * 10) /
-                              10}
-                            g CHO
-                          </span>
-                        </div>
-                        <button
-                          onClick={() => handleAddFoodToPlate(food)}
-                          className="px-3.5 py-1.5 bg-[#111111] dark:bg-[#FF5A36] text-white font-bold text-xs rounded-full hover:opacity-90 transition shrink-0"
+                    {filteredFoods.slice(0, 20).map((food) => {
+                      const inPlateItem = currentPlate.find((p) => p.foodId === food.id);
+                      return (
+                        <div
+                          key={food.id}
+                          className="p-3.5 bg-[#F6F6F7] dark:bg-[#222226] rounded-2xl flex items-center justify-between text-xs"
                         >
-                          + Adicionar
-                        </button>
-                      </div>
-                    ))}
+                          <div className="min-w-0 flex-1 mr-2">
+                            <p className="font-bold truncate text-[#111111] dark:text-white">
+                              {food.name}
+                            </p>
+                            <span className="text-[10px] text-neutral-500 block truncate">
+                              {food.servingDescription}
+                            </span>
+                            <span className="font-mono font-extrabold text-[#FF5A36] text-[11px]">
+                              {Math.round(((food.carbsPer100g * food.gramsPerServing) / 100) * 10) /
+                                10}
+                              g CHO
+                            </span>
+                          </div>
+                          <button
+                            onClick={() => handleAddFoodToPlate(food)}
+                            className={`px-3.5 py-1.5 font-bold text-xs rounded-full hover:opacity-90 transition shrink-0 ${
+                              inPlateItem
+                                ? 'bg-[#FF5A36] text-white'
+                                : 'bg-[#111111] dark:bg-[#FF5A36] text-white'
+                            }`}
+                          >
+                            {inPlateItem
+                              ? `+ Adicionar (${inPlateItem.portionCount}x no prato)`
+                              : '+ Adicionar'}
+                          </button>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               )}
 
-              {/* Sub-view: Favorites */}
+              {/* Sub-view: Favorites with Nicknames ("Apelidos") & Editable after Choosing */}
               {mealsSubTab === 'favorites' && (
-                <div className="bg-white dark:bg-[#161619] rounded-[28px] p-5 shadow-[0_4px_24px_rgba(0,0,0,0.03)] space-y-3">
-                  <h5 className="font-bold text-sm text-[#111111] dark:text-white">
-                    Refeições Salvas em 1 Clique
-                  </h5>
-                  <div className="space-y-2">
-                    {favorites.map((fav) => (
+                <div className="bg-white dark:bg-[#161619] rounded-[28px] p-5 sm:p-6 shadow-[0_4px_24px_rgba(0,0,0,0.03)] space-y-4">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-neutral-100 dark:border-neutral-800">
+                    <div>
+                      <h5 className="font-extrabold text-sm sm:text-base text-[#111111] dark:text-white flex items-center gap-2">
+                        <Star className="w-4 h-4 text-[#FF5A36] fill-[#FF5A36]" />
+                        <span>Refeições Favoritas com Apelidos</span>
+                      </h5>
+                      <p className="text-xs text-neutral-500">
+                        Escolha uma favorita para carregar no prato e altere livremente as porções ou alimentos depois de escolhida
+                      </p>
+                    </div>
+                  </div>
+
+                  {favorites.length === 0 ? (
+                    <div className="py-8 text-center space-y-2">
+                      <p className="text-xs text-neutral-400">
+                        Você ainda não tem refeições favoritas salvas. Monte um prato na aba &ldquo;Meu Prato&rdquo; e clique em <strong>⭐ Favoritar</strong> com um apelido!
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="space-y-2.5">
+                      {favorites.map((fav) => {
+                        const isEditingNick = editingFavoriteId === fav.id;
+                        return (
+                          <div
+                            key={fav.id}
+                            className="p-4 bg-[#F6F6F7] dark:bg-[#222226] rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
+                          >
+                            <div className="space-y-1 min-w-0 flex-1">
+                              {isEditingNick ? (
+                                <div className="flex items-center gap-2">
+                                  <input
+                                    type="text"
+                                    value={editingFavoriteNickname}
+                                    onChange={(e) => setEditingFavoriteNickname(e.target.value)}
+                                    placeholder="Novo apelido da refeição"
+                                    className="px-3 py-1.5 rounded-xl bg-white dark:bg-[#161619] text-xs font-bold text-[#111111] dark:text-white"
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      handleUpdateFavoriteNickname(fav.id, editingFavoriteNickname)
+                                    }
+                                    className="px-3 py-1.5 rounded-xl bg-[#FF5A36] text-white font-bold text-[11px]"
+                                  >
+                                    Salvar Apelido
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setEditingFavoriteId(null)}
+                                    className="text-neutral-400 hover:text-neutral-600 text-[11px] font-bold"
+                                  >
+                                    Cancelar
+                                  </button>
+                                </div>
+                              ) : (
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <span className="font-extrabold text-sm text-[#111111] dark:text-white">
+                                    ⭐ {fav.nickname || fav.name}
+                                  </span>
+                                  <span className="px-2.5 py-0.5 rounded-full bg-[#FF5A36]/15 text-[#FF5A36] font-mono font-extrabold text-[11px]">
+                                    {fav.totalCarbs}g CHO
+                                  </span>
+                                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-white dark:bg-[#161619] text-neutral-500 font-semibold">
+                                    {getMealTypeLabel(fav.mealType)}
+                                  </span>
+                                </div>
+                              )}
+                              <p className="text-[11px] text-neutral-500 truncate">
+                                {fav.items.map((it) => `${it.name} (${it.carbs}g)`).join(' · ')}
+                              </p>
+                            </div>
+
+                            <div className="flex items-center gap-2 shrink-0">
+                              <button
+                                type="button"
+                                onClick={() => handleSelectFavoriteToPlate(fav)}
+                                className="px-3.5 py-2 rounded-full bg-[#FF5A36] hover:bg-[#e84c29] text-white font-bold text-xs transition"
+                              >
+                                Escolher & Editar no Prato
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setEditingFavoriteId(fav.id);
+                                  setEditingFavoriteNickname(fav.nickname || fav.name);
+                                }}
+                                className="p-2 rounded-full bg-white dark:bg-[#161619] text-neutral-600 dark:text-neutral-300 hover:text-[#FF5A36]"
+                                title="Alterar apelido"
+                              >
+                                <Edit3 className="w-3.5 h-3.5" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteFavoriteMeal(fav.id)}
+                                className="p-2 rounded-full bg-white dark:bg-[#161619] text-neutral-400 hover:text-red-500"
+                                title="Remover dos favoritos"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Historical Saved Meals Section (from measurements or plate builder) */}
+              <div className="bg-white dark:bg-[#161619] rounded-[28px] p-5 sm:p-6 shadow-[0_4px_24px_rgba(0,0,0,0.03)] space-y-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h5 className="font-bold text-sm text-[#111111] dark:text-white">
+                      Refeições Registradas ({meals.length})
+                    </h5>
+                    <p className="text-[11px] text-neutral-500">
+                      Todas as refeições cadastradas ficam salvas aqui e podem ser favoritadas ou editadas
+                    </p>
+                  </div>
+                </div>
+
+                {meals.length === 0 ? (
+                  <p className="text-xs text-neutral-400 py-4 text-center">
+                    Nenhuma refeição registrada ainda.
+                  </p>
+                ) : (
+                  <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+                    {meals.slice(0, 20).map((m) => (
                       <div
-                        key={fav.id}
-                        onClick={() => {
-                          setCurrentPlate(fav.items);
-                          setMealTitle(fav.name);
-                          setMealType(fav.mealType);
-                          setMealsSubTab('plate');
-                        }}
-                        className="p-4 bg-[#F6F6F7] dark:bg-[#222226] hover:ring-1 hover:ring-[#FF5A36] rounded-2xl cursor-pointer transition flex items-center justify-between text-xs"
+                        key={m.id}
+                        className="p-3.5 rounded-2xl bg-[#F6F6F7] dark:bg-[#222226] flex flex-wrap items-center justify-between gap-2 text-xs"
                       >
-                        <div>
-                          <p className="font-bold text-[#111111] dark:text-white">{fav.name}</p>
-                          <span className="text-[10px] text-neutral-500">{fav.items.length} itens</span>
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="font-bold text-[#111111] dark:text-white">
+                              🍽️ {m.title}
+                            </span>
+                            <span className="px-2 py-0.5 rounded-full bg-[#FF5A36]/15 text-[#FF5A36] font-mono font-bold text-[11px]">
+                              {m.totalCarbs}g CHO
+                            </span>
+                            {m.bgAtMeal && (
+                              <span className="px-2 py-0.5 rounded-full bg-white dark:bg-[#161619] font-mono font-bold text-[11px] text-neutral-700 dark:text-neutral-300">
+                                🩸 {m.bgAtMeal} mg/dL
+                              </span>
+                            )}
+                            {m.insulinUnitsApplied ? (
+                              <span className="px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 font-mono font-bold text-[11px]">
+                                💉 Aplicou {m.insulinUnitsApplied}U
+                              </span>
+                            ) : null}
+                          </div>
+                          <div className="text-[11px] text-neutral-400 mt-1 flex items-center gap-2 flex-wrap">
+                            <span className="font-mono">
+                              {new Date(m.timestamp).toLocaleDateString('pt-BR', {
+                                day: '2-digit',
+                                month: '2-digit',
+                              })}{' '}
+                              às{' '}
+                              {new Date(m.timestamp).toLocaleTimeString([], {
+                                hour: '2-digit',
+                                minute: '2-digit',
+                              })}
+                            </span>
+                            {m.items.length > 0 && (
+                              <span className="truncate max-w-xs">
+                                · {m.items.map((it) => `${it.name} (${it.carbs}g)`).join(', ')}
+                              </span>
+                            )}
+                          </div>
                         </div>
-                        <span className="font-mono font-extrabold text-[#FF5A36]">
-                          {fav.totalCarbs}g CHO
-                        </span>
+
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          {m.items.length > 0 && (
+                            <button
+                              type="button"
+                              onClick={() => handleSaveHistoricalMealAsFavorite(m)}
+                              className="px-2.5 py-1.5 rounded-full bg-white dark:bg-[#161619] text-[#FF5A36] text-[11px] font-bold hover:bg-[#FF5A36] hover:text-white transition"
+                              title="Favoritar esta refeição"
+                            >
+                              ⭐ Favoritar
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setBolusCarbsInput(m.totalCarbs);
+                              if (m.bgAtMeal) setBolusBgInput(String(m.bgAtMeal));
+                              setPendingBolusContext({
+                                readingId: m.linkedReadingId,
+                                mealId: m.id,
+                                mealTitle: m.title,
+                                bgValue: m.bgAtMeal || (latestReading ? latestReading.value : profile.targetBg),
+                                mealCarbs: m.totalCarbs,
+                                timestamp: m.timestamp,
+                              });
+                              setActivePage('bolus');
+                            }}
+                            className="px-3 py-1.5 rounded-full bg-[#FF5A36] text-white text-[11px] font-bold hover:bg-[#e84c29] transition"
+                          >
+                            Calcular Correção / Bolus
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setMeals(meals.filter((item) => item.id !== m.id));
+                              if (currentUser) deleteMealFromFirestore(currentUser.uid, m.id);
+                            }}
+                            className="p-1.5 text-neutral-400 hover:text-red-500"
+                            title="Excluir refeição"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
                       </div>
                     ))}
                   </div>
-                </div>
-              )}
+                )}
+              </div>
             </motion.div>
           )}
 
           {/* ============================================================== */}
-          {/* TAB 4: CALCULADORA DE BOLUS & RODÍZIO                          */}
+          {/* TAB 4: CALCULADORA DE BOLUS & CORREÇÃO                         */}
           {/* ============================================================== */}
           {activeTab === 'bolus' && (
             <motion.div
@@ -2871,177 +4029,241 @@ export default function App() {
               transition={{ duration: 0.18, ease: 'easeOut' }}
               className="space-y-4"
             >
-              <div className="flex bg-white dark:bg-[#161619] p-1.5 rounded-full shadow-[0_4px_24px_rgba(0,0,0,0.03)]">
-                <button
-                  onClick={() => setBolusSubTab('calculator')}
-                  className={`flex-1 py-2 text-xs font-bold rounded-full transition ${
-                    bolusSubTab === 'calculator'
-                      ? 'bg-[#111111] dark:bg-[#FF5A36] text-white'
-                      : 'text-neutral-500'
-                  }`}
-                >
-                  Calculadora de Bolus
-                </button>
-                <button
-                  onClick={() => setBolusSubTab('rotation')}
-                  className={`flex-1 py-2 text-xs font-bold rounded-full transition ${
-                    bolusSubTab === 'rotation'
-                      ? 'bg-[#111111] dark:bg-[#FF5A36] text-white'
-                      : 'text-neutral-500'
-                  }`}
-                >
-                  Mapa de Rodízio & Diário
-                </button>
-              </div>
-
-              {bolusSubTab === 'calculator' ? (
-                <div className="bg-white dark:bg-[#161619] rounded-[28px] p-5 sm:p-6 shadow-[0_4px_24px_rgba(0,0,0,0.03)] space-y-5">
-                  <div className="flex items-center justify-between pb-3 border-b border-neutral-100 dark:border-neutral-800">
-                    <div>
-                      <h4 className="font-bold text-base text-[#111111] dark:text-white">
-                        Cálculo de Bolus Dinâmico
-                      </h4>
-                      <p className="text-xs text-neutral-500">
-                        Alimentação + Correção com desconto de Insulina Ativa (IOB)
-                      </p>
-                    </div>
-                    <div className="text-right">
-                      <span className="text-[10px] text-neutral-400 block font-bold">IOB ATIVA</span>
-                      <span className="font-mono text-lg font-extrabold text-[#FF5A36]">
-                        {totalIOB} U
+              {/* Context Banner when redirected from a Meal Measurement or Plate */}
+              {pendingBolusContext && (
+                <div className="bg-[#FF5A36]/10 border border-[#FF5A36]/30 rounded-[28px] p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="px-2.5 py-0.5 rounded-full bg-[#FF5A36] text-white text-[10px] font-extrabold uppercase">
+                        Refeição + Medição Salvas
                       </span>
+                      <h5 className="font-extrabold text-sm text-[#111111] dark:text-white">
+                        🍽️ {pendingBolusContext.mealTitle}
+                      </h5>
                     </div>
+                    <p className="text-xs text-neutral-600 dark:text-neutral-300">
+                      Glicemia registrada: <strong>{pendingBolusContext.bgValue} mg/dL</strong> · Carboidratos da refeição:{' '}
+                      <strong>{pendingBolusContext.mealCarbs ?? 0}g CHO</strong>. Confira a dose exata abaixo e confirme se aplicou insulina.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setPendingBolusContext(null)}
+                    className="text-xs font-bold text-neutral-500 hover:text-[#111111] dark:hover:text-white self-end sm:self-center shrink-0"
+                  >
+                    Dispensar aviso
+                  </button>
+                </div>
+              )}
+
+              <div className="bg-white dark:bg-[#161619] rounded-[28px] p-5 sm:p-6 shadow-[0_4px_24px_rgba(0,0,0,0.03)] space-y-5">
+                <div className="flex items-center justify-between pb-3 border-b border-neutral-100 dark:border-neutral-800">
+                  <div>
+                    <h4 className="font-bold text-base text-[#111111] dark:text-white">
+                      Calculadora de Bolus & Correção Exata
+                    </h4>
+                    <p className="text-xs text-neutral-500">
+                      Alimentação + Correção Glicêmica com desconto de Insulina Ativa (IOB)
+                    </p>
+                  </div>
+                  <div className="text-right">
+                    <span className="text-[10px] text-neutral-400 block font-bold">IOB ATIVA</span>
+                    <span className="font-mono text-lg font-extrabold text-[#FF5A36]">
+                      {totalIOB} U
+                    </span>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div>
+                    <label className="text-xs font-bold text-neutral-600 dark:text-neutral-300 block mb-1.5">
+                      Carboidratos da Refeição (g)
+                    </label>
+                    <input
+                      type="number"
+                      value={bolusCarbsInput || ''}
+                      onChange={(e) => setBolusCarbsInput(Number(e.target.value))}
+                      placeholder="0 (apenas correção)"
+                      className="w-full px-4 py-2.5 text-base font-mono font-bold bg-[#F6F6F7] dark:bg-[#222226] rounded-2xl focus:outline-hidden focus:ring-2 focus:ring-[#FF5A36] text-[#111111] dark:text-white"
+                    />
                   </div>
 
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                    <div>
-                      <label className="text-xs font-bold text-neutral-600 dark:text-neutral-300 block mb-1.5">
-                        Carboidratos (g)
-                      </label>
-                      <input
-                        type="number"
-                        value={bolusCarbsInput || ''}
-                        onChange={(e) => setBolusCarbsInput(Number(e.target.value))}
-                        placeholder="Ex: 50"
-                        className="w-full px-4 py-2.5 text-base font-mono font-bold bg-[#F6F6F7] dark:bg-[#222226] rounded-2xl focus:outline-hidden focus:ring-2 focus:ring-[#FF5A36]"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="text-xs font-bold text-neutral-600 dark:text-neutral-300 block mb-1.5">
-                        Glicemia Atual (mg/dL)
-                      </label>
-                      <input
-                        type="number"
-                        value={bolusBgInput}
-                        onChange={(e) => setBolusBgInput(e.target.value)}
-                        placeholder={latestReading ? String(latestReading.value) : '100'}
-                        className="w-full px-4 py-2.5 text-base font-mono font-bold bg-[#F6F6F7] dark:bg-[#222226] rounded-2xl focus:outline-hidden focus:ring-2 focus:ring-[#FF5A36]"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="text-xs font-bold text-neutral-600 dark:text-neutral-300 block mb-1.5">
-                        Período / ICR
-                      </label>
-                      <select
-                        value={bolusTimeOfDay}
-                        onChange={(e) => setBolusTimeOfDay(e.target.value as any)}
-                        className="w-full px-4 py-3 text-xs font-bold bg-[#F6F6F7] dark:bg-[#222226] rounded-2xl"
-                      >
-                        <option value="morning">Manhã (1U : {profile.icrMorning}g)</option>
-                        <option value="afternoon">Tarde (1U : {profile.icrAfternoon}g)</option>
-                        <option value="night">Noite (1U : {profile.icrNight}g)</option>
-                      </select>
-                    </div>
+                  <div>
+                    <label className="text-xs font-bold text-neutral-600 dark:text-neutral-300 block mb-1.5">
+                      Glicemia Atual (mg/dL)
+                    </label>
+                    <input
+                      type="number"
+                      value={bolusBgInput}
+                      onChange={(e) => setBolusBgInput(e.target.value)}
+                      placeholder={latestReading ? String(latestReading.value) : '100'}
+                      className="w-full px-4 py-2.5 text-base font-mono font-bold bg-[#F6F6F7] dark:bg-[#222226] rounded-2xl focus:outline-hidden focus:ring-2 focus:ring-[#FF5A36] text-[#111111] dark:text-white"
+                    />
                   </div>
 
-                  {/* Result Hero */}
-                  <div className="p-5 rounded-3xl bg-[#111111] text-white flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                  <div>
+                    <label className="text-xs font-bold text-neutral-600 dark:text-neutral-300 block mb-1.5">
+                      Período / Relação Insulina:CHO
+                    </label>
+                    <select
+                      value={bolusTimeOfDay}
+                      onChange={(e) => setBolusTimeOfDay(e.target.value as any)}
+                      className="w-full px-4 py-3 text-xs font-bold bg-[#F6F6F7] dark:bg-[#222226] rounded-2xl text-[#111111] dark:text-white"
+                    >
+                      <option value="morning">Manhã (1U : {profile.icrMorning}g)</option>
+                      <option value="afternoon">Tarde (1U : {profile.icrAfternoon}g)</option>
+                      <option value="night">Noite (1U : {profile.icrNight}g)</option>
+                    </select>
+                  </div>
+                </div>
+
+                {/* Formula Breakdown Cards */}
+                <div className="grid grid-cols-3 gap-3 text-xs">
+                  <div className="p-3.5 bg-[#F6F6F7] dark:bg-[#222226] rounded-2xl">
+                    <span className="text-[10px] text-neutral-500 block">Bolus Alimentação</span>
+                    <span className="font-mono font-extrabold text-sm text-[#111111] dark:text-white">
+                      +{bolusResult.foodBolus}U
+                    </span>
+                  </div>
+                  <div className="p-3.5 bg-[#F6F6F7] dark:bg-[#222226] rounded-2xl">
+                    <span className="text-[10px] text-neutral-500 block">Bolus Correção</span>
+                    <span className="font-mono font-extrabold text-sm text-[#111111] dark:text-white">
+                      +{bolusResult.correctionBolus}U
+                    </span>
+                  </div>
+                  <div className="p-3.5 bg-[#F6F6F7] dark:bg-[#222226] rounded-2xl">
+                    <span className="text-[10px] text-neutral-500 block">Desconto IOB</span>
+                    <span className="font-mono font-extrabold text-sm text-[#FF5A36]">
+                      -{bolusResult.iob}U
+                    </span>
+                  </div>
+                </div>
+
+                {/* Result Hero + Direct Application Registration */}
+                <div className="p-5 rounded-3xl bg-[#111111] text-white space-y-4">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                     <div>
                       <span className="text-[11px] font-bold text-neutral-400 block">
-                        Dose de Bolus Recomendada
+                        Dose Recomendada (Correção + Refeição)
                       </span>
                       <div className="flex items-baseline gap-2 mt-1">
                         <span className="text-[#FF5A36] font-extrabold text-2xl">U</span>
                         <span className="font-mono text-4xl font-extrabold text-white tabular-nums">
                           {bolusResult.roundedBolus}
                         </span>
-                        <span className="text-xs text-neutral-400">Unidades</span>
+                        <span className="text-xs text-neutral-400">
+                          Unidades ({profile.rapidInsulinName})
+                        </span>
                       </div>
                     </div>
 
                     <button
+                      type="button"
                       onClick={() => {
                         setDoseUnitsInput(String(bolusResult.roundedBolus));
                         setDoseTypeInput('rapid');
-                        setBolusSubTab('rotation');
+                        setBolusWillApplyDose(true);
                       }}
-                      className="px-5 py-3 bg-[#FF5A36] hover:bg-[#e84c29] text-white font-bold text-xs rounded-full transition flex items-center justify-center gap-2"
+                      className="px-4 py-2 rounded-full bg-white/10 hover:bg-white/20 text-xs font-bold text-white transition self-start sm:self-center"
                     >
-                      <Syringe className="w-4 h-4" />
-                      <span>Registrar Aplicação</span>
+                      Usar {bolusResult.roundedBolus}U sugeridas
                     </button>
                   </div>
 
-                  {/* Formula Breakdown Cards */}
-                  <div className="grid grid-cols-3 gap-3 text-xs">
-                    <div className="p-3.5 bg-[#F6F6F7] dark:bg-[#222226] rounded-2xl">
-                      <span className="text-[10px] text-neutral-500 block">Alimentação</span>
-                      <span className="font-mono font-extrabold text-sm text-[#111111] dark:text-white">
-                        +{bolusResult.foodBolus}U
+                  {/* Registrar Aplicação ou Não Aplicar */}
+                  <div className="pt-4 border-t border-white/10 space-y-3">
+                    <div className="flex items-center justify-between flex-wrap gap-2">
+                      <span className="text-xs font-bold text-neutral-200">
+                        Registrar aplicação desta correção / refeição:
                       </span>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setBolusWillApplyDose(true)}
+                          className={`px-3.5 py-1.5 rounded-full text-xs font-bold transition ${
+                            bolusWillApplyDose
+                              ? 'bg-[#FF5A36] text-white'
+                              : 'bg-white/10 text-neutral-300'
+                          }`}
+                        >
+                          Sim, aplicar dose
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setBolusWillApplyDose(false)}
+                          className={`px-3.5 py-1.5 rounded-full text-xs font-bold transition ${
+                            !bolusWillApplyDose
+                              ? 'bg-white text-[#111111]'
+                              : 'bg-white/10 text-neutral-300'
+                          }`}
+                        >
+                          Não aplicar agora
+                        </button>
+                      </div>
                     </div>
-                    <div className="p-3.5 bg-[#F6F6F7] dark:bg-[#222226] rounded-2xl">
-                      <span className="text-[10px] text-neutral-500 block">Correção</span>
-                      <span className="font-mono font-extrabold text-sm text-[#111111] dark:text-white">
-                        +{bolusResult.correctionBolus}U
-                      </span>
-                    </div>
-                    <div className="p-3.5 bg-[#F6F6F7] dark:bg-[#222226] rounded-2xl">
-                      <span className="text-[10px] text-neutral-500 block">Desconto IOB</span>
-                      <span className="font-mono font-extrabold text-sm text-[#FF5A36]">
-                        -{bolusResult.iob}U
-                      </span>
-                    </div>
+
+                    {bolusWillApplyDose ? (
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-1 items-end">
+                        <div>
+                          <label className="text-[11px] text-neutral-400 block mb-1">
+                            Dose Aplicada (U)
+                          </label>
+                          <input
+                            type="number"
+                            step="0.5"
+                            min="0.5"
+                            max="150"
+                            value={doseUnitsInput}
+                            onChange={(e) => setDoseUnitsInput(e.target.value)}
+                            className="w-full px-4 py-2.5 rounded-2xl bg-white/10 text-white font-mono font-extrabold text-sm focus:outline-hidden focus:ring-2 focus:ring-[#FF5A36]"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-[11px] text-neutral-400 block mb-1">
+                            Tipo de Insulina
+                          </label>
+                          <select
+                            value={doseTypeInput}
+                            onChange={(e) => setDoseTypeInput(e.target.value as 'rapid' | 'basal')}
+                            className="w-full px-4 py-2.5 rounded-2xl bg-white/10 text-white text-xs font-bold"
+                          >
+                            <option value="rapid" className="text-black">
+                              Rápida ({profile.rapidInsulinName})
+                            </option>
+                            <option value="basal" className="text-black">
+                              Basal ({profile.basalInsulinName})
+                            </option>
+                          </select>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={handleLogInsulinDose}
+                          className="w-full py-2.5 px-5 bg-[#FF5A36] hover:bg-[#e84c29] text-white font-bold text-xs rounded-2xl transition flex items-center justify-center gap-1.5 shadow-sm"
+                        >
+                          <Check className="w-4 h-4" />
+                          <span>Salvar Aplicação ({doseUnitsInput}U)</span>
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="flex items-center justify-between pt-1">
+                        <span className="text-xs text-neutral-400">
+                          A medição e a refeição já estão salvas sem aplicação de insulina.
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setPendingBolusContext(null);
+                            setActivePage('glucose');
+                          }}
+                          className="px-4 py-2 rounded-full bg-white text-[#111111] font-bold text-xs"
+                        >
+                          Concluir sem Aplicar
+                        </button>
+                      </div>
+                    )}
                   </div>
                 </div>
-              ) : (
-                <div className="space-y-4">
-                  <div className="bg-white dark:bg-[#161619] rounded-[28px] p-4 shadow-[0_4px_24px_rgba(0,0,0,0.03)] flex flex-wrap items-center gap-2.5">
-                    <select
-                      value={doseTypeInput}
-                      onChange={(e) => setDoseTypeInput(e.target.value as any)}
-                      className="px-4 py-2 text-xs font-bold bg-[#F6F6F7] dark:bg-[#222226] rounded-full"
-                    >
-                      <option value="rapid">Rápida ({profile.rapidInsulinName})</option>
-                      <option value="basal">Basal ({profile.basalInsulinName})</option>
-                    </select>
-
-                    <input
-                      type="number"
-                      step="0.5"
-                      value={doseUnitsInput}
-                      onChange={(e) => setDoseUnitsInput(e.target.value)}
-                      className="w-24 px-4 py-2 text-xs font-mono font-bold bg-[#F6F6F7] dark:bg-[#222226] rounded-full"
-                    />
-
-                    <button
-                      onClick={handleLogInsulinDose}
-                      className="px-5 py-2 bg-[#FF5A36] hover:bg-[#e84c29] text-white font-bold text-xs rounded-full transition flex items-center gap-1.5 ml-auto"
-                    >
-                      <Check className="w-3.5 h-3.5" />
-                      <span>Salvar Dose</span>
-                    </button>
-                  </div>
-
-                  <BodyRotationMap
-                    selectedSite={selectedSite}
-                    onSelectSite={(s) => setSelectedSite(s)}
-                    recentDoses={doses}
-                  />
-                </div>
-              )}
+              </div>
             </motion.div>
           )}
 
@@ -3431,10 +4653,17 @@ export default function App() {
             >
               <DailyRoutineView
                 routineLog={routineLog}
+                routineHistory={routineHistory}
+                selectedRoutineDate={selectedRoutineDate}
+                onSelectRoutineDate={(dateStr) => setSelectedRoutineDate(dateStr)}
                 onUpdateRoutine={handleUpdateRoutine}
+                enabledGoals={enabledRoutineGoals}
+                onToggleGoalEnabled={handleToggleGoalEnabled}
                 profile={profile}
+                readings={readings}
                 latestReading={latestReading}
                 reminders={reminders}
+                moments={effectiveMoments}
                 onToggleReminder={(id) => {
                   const updated = reminders.map((r) =>
                     r.id === id ? { ...r, enabled: !r.enabled } : r
@@ -3447,6 +4676,7 @@ export default function App() {
                   if (currentUser) saveReminderToFirestore(currentUser.uid, r);
                 }}
                 onOpenManualReading={() => setIsManualReadingModalOpen(true)}
+                onOpenRemindersPage={() => setActivePage('reminders')}
                 isDark={isDark}
               />
             </motion.div>
@@ -3470,43 +4700,6 @@ export default function App() {
                 profile={profile}
                 isDark={isDark}
                 onOpenReportModal={() => setIsReportModalOpen(true)}
-              />
-            </motion.div>
-          )}
-
-          {/* ============================================================== */}
-          {/* PÁGINA: MAPA DE RODÍZIO DE APLICAÇÃO (LIPODISTROFIA)           */}
-          {/* ============================================================== */}
-          {activePage === 'rotation' && (
-            <motion.div
-              key="rotation"
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -8 }}
-              transition={{ duration: 0.18, ease: 'easeOut' }}
-              className="space-y-4"
-            >
-              <div className="bg-white dark:bg-[#161619] rounded-[28px] p-5 sm:p-6 shadow-[0_4px_24px_rgba(0,0,0,0.03)] flex items-center justify-between">
-                <div>
-                  <h3 className="font-extrabold text-base text-[#111111] dark:text-white">
-                    Mapa de Rodízio de Injeções
-                  </h3>
-                  <p className="text-xs text-neutral-500">
-                    Previna lipodistrofias alternando os locais de aplicação de insulina
-                  </p>
-                </div>
-                <button
-                  onClick={() => setActivePage('bolus')}
-                  className="px-4 py-2 bg-[#FF5A36] text-white text-xs font-bold rounded-full"
-                >
-                  Calculadora Bolus
-                </button>
-              </div>
-
-              <BodyRotationMap
-                selectedSite={selectedSite}
-                onSelectSite={(site) => setSelectedSite(site)}
-                recentDoses={doses}
               />
             </motion.div>
           )}
@@ -3699,7 +4892,7 @@ export default function App() {
           )}
 
           {/* ============================================================== */}
-          {/* PÁGINA: LEMBRETES & ALARMES                                    */}
+          {/* PÁGINA: LEMBRETES, NOTIFICAÇÕES PUSH & PREFERÊNCIAS            */}
           {/* ============================================================== */}
           {activePage === 'reminders' && (
             <motion.div
@@ -3710,14 +4903,199 @@ export default function App() {
               transition={{ duration: 0.18, ease: 'easeOut' }}
               className="space-y-4"
             >
+              {/* Card 1: Status das Notificações Push + Ícone da Logo + Preferências do Cliente */}
+              <div className="bg-white dark:bg-[#161619] rounded-[28px] p-5 sm:p-6 shadow-[0_4px_24px_rgba(0,0,0,0.03)] space-y-5">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-neutral-100 dark:border-neutral-800">
+                  <div className="flex items-center gap-3">
+                    <div className="w-12 h-12 rounded-2xl bg-[#F6F6F7] dark:bg-[#222226] border border-neutral-200 dark:border-neutral-800 p-2 flex items-center justify-center shrink-0">
+                      <img
+                        src={getAppLogoUrl()}
+                        onError={(e) => {
+                          (e.currentTarget as HTMLImageElement).src = './assets/aistudio/image_573043af.png';
+                        }}
+                        alt="Logo Minha Glico"
+                        className="w-full h-full object-contain"
+                      />
+                    </div>
+                    <div>
+                      <h3 className="font-extrabold text-base sm:text-lg text-[#111111] dark:text-white">
+                        Notificações Push & Escolha do que Notificar
+                      </h3>
+                      <p className="text-xs text-neutral-500">
+                        Todas as notificações usam a logo oficial do Minha Glico como ícone
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 shrink-0">
+                    {notifPermission !== 'granted' ? (
+                      <button
+                        type="button"
+                        onClick={handleRequestNotificationPermission}
+                        className="px-4 py-2.5 bg-[#FF5A36] hover:bg-[#e84c29] text-white font-bold text-xs rounded-full transition shadow-xs"
+                      >
+                        Ativar Notificações Push
+                      </button>
+                    ) : (
+                      <span className="px-3 py-1.5 rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 text-xs font-extrabold">
+                        ● Push Ativo no Dispositivo
+                      </span>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => handleTestNotification('post_prandial')}
+                      className="px-3.5 py-2 rounded-full bg-[#111111] dark:bg-white text-white dark:text-[#111111] text-xs font-bold transition"
+                    >
+                      Testar Push Agora
+                    </button>
+                  </div>
+                </div>
+
+                {/* Escolha do que o cliente quer ser notificado */}
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <h4 className="font-extrabold text-xs sm:text-sm text-[#111111] dark:text-white">
+                      Escolha o que você deseja ser notificado:
+                    </h4>
+                    <label className="flex items-center gap-2 text-xs font-bold cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={notificationPrefs.enabled}
+                        onChange={(e) => handleUpdateNotificationPref('enabled', e.target.checked)}
+                        className="w-4 h-4 accent-[#FF5A36]"
+                      />
+                      <span>Chave Geral de Notificações</span>
+                    </label>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                    {(
+                      [
+                        {
+                          key: 'momentAlerts',
+                          title: '🩸 Horários dos Momentos da Medição',
+                          desc: 'Notifica nos horários cadastrados em cada momento (Jejum, Almoço, Jantar...)',
+                        },
+                        {
+                          key: 'postMealTimer',
+                          title: '⏱️ Alerta 2h Pós-Refeição',
+                          desc: 'Avise automaticamente 2 horas após salvar uma refeição',
+                        },
+                        {
+                          key: 'basalReminder',
+                          title: '💉 Lembrete de Insulina Basal',
+                          desc: 'Alerta para não esquecer sua dose diária de insulina lenta',
+                        },
+                        {
+                          key: 'hypoHyperAlerts',
+                          title: '⚠️ Alertas de Hipo e Hiperglicemia',
+                          desc: 'Notificação imediata quando a glicemia estiver <70 ou >250 mg/dL',
+                        },
+                        {
+                          key: 'waterReminder',
+                          title: '💧 Meta de Hidratação Diária',
+                          desc: 'Lembretes para atingir sua meta de água do dia',
+                        },
+                        {
+                          key: 'bedtimeReminder',
+                          title: '🌙 Checagem Antes de Dormir',
+                          desc: 'Alerta noturno para checar a glicemia de segurança',
+                        },
+                        {
+                          key: 'customReminders',
+                          title: '⏰ Meus Alarmes Personalizados',
+                          desc: 'Notificar os horários personalizados criados na lista abaixo',
+                        },
+                      ] as const
+                    ).map((pref) => {
+                      const isChecked = notificationPrefs[pref.key];
+                      return (
+                        <div
+                          key={pref.key}
+                          onClick={() => handleUpdateNotificationPref(pref.key, !isChecked)}
+                          className={`p-3.5 rounded-2xl border cursor-pointer transition flex items-start justify-between gap-3 ${
+                            isChecked && notificationPrefs.enabled
+                              ? 'bg-[#FF5A36]/10 border-[#FF5A36]/40'
+                              : 'bg-[#F6F6F7] dark:bg-[#222226] border-transparent opacity-60'
+                          }`}
+                        >
+                          <div className="text-xs">
+                            <p className="font-bold text-[#111111] dark:text-white">{pref.title}</p>
+                            <p className="text-[11px] text-neutral-500 mt-0.5">{pref.desc}</p>
+                          </div>
+                          <input
+                            type="checkbox"
+                            checked={isChecked}
+                            onChange={() => {}}
+                            className="w-4 h-4 accent-[#FF5A36] mt-0.5 shrink-0"
+                          />
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+
+              {/* Card 2: Horários de Notificação nos Momentos da Medição */}
+              <div className="bg-white dark:bg-[#161619] rounded-[28px] p-5 sm:p-6 shadow-[0_4px_24px_rgba(0,0,0,0.03)] space-y-4">
+                <div>
+                  <h4 className="font-extrabold text-sm sm:text-base text-[#111111] dark:text-white">
+                    Horários de Notificação nos Momentos da Medição
+                  </h4>
+                  <p className="text-xs text-neutral-500">
+                    Defina o horário em que pretende ser notificado para cada Momento da Medição
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  {effectiveMoments.map((m) => (
+                    <div
+                      key={m.id}
+                      className="p-3.5 rounded-2xl bg-[#F6F6F7] dark:bg-[#222226] flex items-center justify-between gap-2 text-xs"
+                    >
+                      <div className="min-w-0">
+                        <p className="font-bold text-[#111111] dark:text-white truncate">
+                          {m.label}
+                        </p>
+                        <span className="text-[10px] text-neutral-500">
+                          {m.category === 'meal'
+                            ? '🍽️ Refeição'
+                            : m.category === 'post_meal'
+                            ? '⏱️ Pós-Refeição'
+                            : '🩸 Jejum / Rotina'}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <input
+                          type="time"
+                          value={m.notifyTime || ''}
+                          onChange={(e) => handleUpdateMomentNotifyTime(m.id, e.target.value)}
+                          className="px-2.5 py-1.5 rounded-xl bg-white dark:bg-[#161619] font-mono font-bold text-xs text-[#111111] dark:text-white"
+                        />
+                        {m.notifyTime && (
+                          <input
+                            type="checkbox"
+                            checked={m.notifyEnabled !== false}
+                            onChange={() => handleToggleMomentNotify(m.id)}
+                            className="w-4 h-4 accent-[#FF5A36]"
+                            title="Ativar/desativar notificação deste momento"
+                          />
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Card 3: Alarmes e Lembretes Extras */}
               <div className="bg-white dark:bg-[#161619] rounded-[28px] p-5 sm:p-6 shadow-[0_4px_24px_rgba(0,0,0,0.03)] space-y-4">
                 <div className="flex items-center justify-between pb-3 border-b border-neutral-100 dark:border-neutral-800">
                   <div>
                     <h3 className="font-extrabold text-base text-[#111111] dark:text-white">
-                      Lembretes & Alarmes Diários
+                      Alarmes & Lembretes Extras
                     </h3>
                     <p className="text-xs text-neutral-500">
-                      Notificações para medição, água e insulina basal
+                      Adicione horários extras para água, medicamentos ou insulina basal
                     </p>
                   </div>
                 </div>
@@ -3733,7 +5111,7 @@ export default function App() {
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
                     <input
                       type="text"
-                      placeholder="Título (ex: Medir Pós-Almoço)"
+                      placeholder="Título (ex: Tomar Glifage, Beber Água)"
                       value={newReminderTitle}
                       onChange={(e) => setNewReminderTitle(e.target.value)}
                       className="w-full px-4 py-2.5 rounded-full bg-white dark:bg-[#161619] text-xs text-[#111111] dark:text-white"
@@ -3865,28 +5243,27 @@ export default function App() {
         onOpenBluetooth={() => setIsBluetoothModalOpen(true)}
         onOpenReportModal={() => setIsReportModalOpen(true)}
         onOpenManualReading={() => setIsManualReadingModalOpen(true)}
-        onOpenResetAll={() => setIsResetAllModalOpen(true)}
       />
 
       {/* ============================================================== */}
-      {/* MANUAL READING MODAL (Bento Style + Past Date/Time + 8 Moments)*/}
+      {/* MANUAL READING MODAL (Personalizar Momentos + Refeição / Pós)  */}
       {/* ============================================================== */}
       {isManualReadingModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-xs p-3 sm:p-4 overflow-y-auto">
-          <div className="bg-white dark:bg-[#161619] rounded-[28px] max-w-md w-full p-5 sm:p-6 shadow-2xl animate-in fade-in zoom-in duration-150 my-auto">
+          <div className="bg-white dark:bg-[#161619] rounded-[28px] max-w-lg w-full p-5 sm:p-6 shadow-2xl animate-in fade-in zoom-in duration-150 my-auto max-h-[92vh] overflow-y-auto">
             <div className="flex items-center justify-between pb-3 border-b border-neutral-100 dark:border-neutral-800">
               <div>
                 <h3 className="font-bold text-[#111111] dark:text-white text-base sm:text-lg tracking-tight">
                   Nova Medição de Glicemia
                 </h3>
                 <p className="text-[11px] text-neutral-500">
-                  Registre medições atuais ou de dias e horários passados
+                  Personalize o momento e cadastre como Refeição (com calculadora de Bolus) ou Pós-Refeição
                 </p>
               </div>
               <button
                 type="button"
                 onClick={() => setIsManualReadingModalOpen(false)}
-                className="w-8 h-8 rounded-full bg-[#F6F6F7] dark:bg-[#222226] text-neutral-500 hover:text-[#111111] dark:hover:text-white flex items-center justify-center"
+                className="w-8 h-8 rounded-full bg-[#F6F6F7] dark:bg-[#222226] text-neutral-500 hover:text-[#111111] dark:hover:text-white flex items-center justify-center shrink-0"
               >
                 <X className="w-4 h-4" />
               </button>
@@ -3905,7 +5282,7 @@ export default function App() {
                     required
                     min="20"
                     max="600"
-                    placeholder="Ex: 110"
+                    placeholder="Ex: 145"
                     value={manualBgValue}
                     onChange={(e) => setManualBgValue(e.target.value)}
                     className="w-full px-4 py-3 text-2xl font-mono font-extrabold bg-[#F6F6F7] dark:bg-[#222226] rounded-2xl focus:outline-hidden focus:ring-2 focus:ring-[#FF5A36] text-[#111111] dark:text-white"
@@ -3916,7 +5293,7 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Data e Horário (Permite cadastrar valores passados) */}
+              {/* Data e Horário */}
               <div>
                 <div className="flex items-center justify-between mb-1.5">
                   <label className="text-xs font-bold text-neutral-700 dark:text-neutral-300 flex items-center gap-1.5">
@@ -3953,144 +5330,390 @@ export default function App() {
                 />
               </div>
 
-              {/* Momento da Medição - APENAS OS ITENS DISPOSTOS (sem select) */}
-              <div>
-                <div className="flex items-center justify-between mb-1.5">
+              {/* Momentos da Medição + Criar / Personalizar */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
                   <label className="text-xs font-bold text-neutral-700 dark:text-neutral-300">
                     Momento da Medição *
                   </label>
-                  <span className="text-[11px] text-[#FF5A36] font-bold">
-                    {getGlucoseContextLabel(manualContext)}
-                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setIsCustomizingMoments(!isCustomizingMoments)}
+                    className="text-[11px] font-bold text-[#FF5A36] hover:underline flex items-center gap-1"
+                  >
+                    <Settings className="w-3 h-3" />
+                    <span>{isCustomizingMoments ? 'Fechar Personalização' : '+ Criar / Personalizar Momentos'}</span>
+                  </button>
                 </div>
 
+                {/* Painel para Criar e Personalizar Momentos + Horário de Notificação */}
+                {isCustomizingMoments && (
+                  <div className="p-3.5 rounded-2xl bg-[#F6F6F7] dark:bg-[#222226] border border-[#FF5A36]/30 space-y-3 animate-in fade-in">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-extrabold text-[#111111] dark:text-white">
+                        Criar ou Personalizar Momentos & Notificações
+                      </span>
+                      <button
+                        type="button"
+                        onClick={handleRestoreDefaultMoments}
+                        className="text-[10px] font-bold text-neutral-500 hover:text-[#FF5A36]"
+                      >
+                        Restaurar Padrão
+                      </button>
+                    </div>
+
+                    <div className="space-y-2">
+                      <input
+                        type="text"
+                        placeholder="Nome do novo momento (ex: Pré-Treino, Lanche da Manhã...)"
+                        value={newMomentLabel}
+                        onChange={(e) => setNewMomentLabel(e.target.value)}
+                        className="w-full px-3.5 py-2 rounded-xl bg-white dark:bg-[#161619] text-xs font-semibold text-[#111111] dark:text-white"
+                      />
+
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                        <div>
+                          <label className="text-[10px] font-bold text-neutral-500 block mb-1">
+                            Tipo do Momento
+                          </label>
+                          <select
+                            value={newMomentCategory}
+                            onChange={(e) => setNewMomentCategory(e.target.value as MomentCategory)}
+                            className="w-full px-3 py-2 rounded-xl bg-white dark:bg-[#161619] text-xs font-bold text-[#111111] dark:text-white"
+                          >
+                            <option value="meal">🍽️ Refeição</option>
+                            <option value="post_meal">⏱️ Pós-Refeição</option>
+                            <option value="fasting">🩸 Jejum / Rotina</option>
+                          </select>
+                        </div>
+
+                        {newMomentCategory === 'meal' && (
+                          <div>
+                            <label className="text-[10px] font-bold text-neutral-500 block mb-1">
+                              Refeição Padrão
+                            </label>
+                            <select
+                              value={newMomentDefaultMeal}
+                              onChange={(e) => setNewMomentDefaultMeal(e.target.value as any)}
+                              className="w-full px-3 py-2 rounded-xl bg-white dark:bg-[#161619] text-xs font-bold text-[#111111] dark:text-white"
+                            >
+                              <option value="cafe">Café da Manhã</option>
+                              <option value="almoco">Almoço</option>
+                              <option value="lanche">Lanche</option>
+                              <option value="jantar">Jantar</option>
+                              <option value="ceia">Ceia</option>
+                              <option value="outro">Outra Refeição</option>
+                            </select>
+                          </div>
+                        )}
+
+                        <div>
+                          <label className="text-[10px] font-bold text-neutral-500 block mb-1">
+                            🔔 Horário Notificação
+                          </label>
+                          <input
+                            type="time"
+                            value={newMomentNotifyTime}
+                            onChange={(e) => setNewMomentNotifyTime(e.target.value)}
+                            className="w-full px-3 py-2 rounded-xl bg-white dark:bg-[#161619] text-xs font-mono font-bold text-[#111111] dark:text-white"
+                          />
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={handleAddCustomMoment}
+                        className="w-full py-2 bg-[#FF5A36] hover:bg-[#e84c29] text-white font-bold text-xs rounded-xl transition"
+                      >
+                        + Adicionar Momento Personalizado
+                      </button>
+                    </div>
+
+                    {/* Lista de momentos atuais para editar tipo, horário de notificação ou excluir */}
+                    <div className="space-y-1.5 max-h-48 overflow-y-auto pt-2 border-t border-neutral-200 dark:border-neutral-700">
+                      <span className="text-[10px] font-bold text-neutral-500 block">
+                        Defina o horário (🔔) para receber notificação push em cada momento:
+                      </span>
+                      {effectiveMoments.map((m) => (
+                        <div
+                          key={m.id}
+                          className="flex flex-wrap items-center justify-between gap-1.5 px-2.5 py-1.5 rounded-xl bg-white dark:bg-[#161619] text-[11px]"
+                        >
+                          <span className="font-bold text-[#111111] dark:text-white truncate max-w-[130px]">
+                            {m.label}
+                          </span>
+                          <div className="flex items-center gap-1.5 shrink-0 ml-auto">
+                            <input
+                              type="time"
+                              value={m.notifyTime || ''}
+                              onChange={(e) => handleUpdateMomentNotifyTime(m.id, e.target.value)}
+                              title="Horário para notificar este momento"
+                              className="px-2 py-0.5 rounded-lg bg-[#F6F6F7] dark:bg-[#222226] text-[10px] font-mono font-bold text-[#111111] dark:text-white"
+                            />
+                            <select
+                              value={m.category}
+                              onChange={(e) =>
+                                handleChangeMomentCategory(m.id, e.target.value as MomentCategory)
+                              }
+                              className="px-2 py-0.5 rounded-lg bg-[#F6F6F7] dark:bg-[#222226] text-[10px] font-bold text-[#111111] dark:text-white"
+                            >
+                              <option value="meal">🍽️ Refeição</option>
+                              <option value="post_meal">⏱️ Pós</option>
+                              <option value="fasting">🩸 Jejum</option>
+                            </select>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteMoment(m.id)}
+                              className="text-neutral-400 hover:text-red-500 p-1"
+                              title="Remover momento"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Botões de seleção do Momento da Medição */}
                 <div className="grid grid-cols-2 gap-2">
-                  {GLUCOSE_MOMENTS.map((m) => {
-                    const isSelected = manualContext === m.value;
+                  {effectiveMoments.map((m) => {
+                    const isSelected = manualContext === m.id;
                     return (
                       <button
-                        key={m.value}
+                        key={m.id}
                         type="button"
-                        onClick={() => setManualContext(m.value)}
-                        className={`py-2.5 px-3 rounded-2xl text-xs font-bold transition text-center ${
+                        onClick={() => handleSelectManualMoment(m)}
+                        className={`py-2.5 px-3 rounded-2xl text-xs font-bold transition flex items-center justify-between gap-1.5 ${
                           isSelected
                             ? 'bg-[#FF5A36] text-white shadow-sm'
                             : 'bg-[#F6F6F7] dark:bg-[#222226] text-neutral-700 dark:text-neutral-300 hover:bg-neutral-200 dark:hover:bg-neutral-700'
                         }`}
                       >
-                        {m.label}
+                        <span className="truncate">{m.label}</span>
+                        <div className="flex items-center gap-1 shrink-0">
+                          {m.notifyTime && m.notifyEnabled !== false && (
+                            <span
+                              className={`text-[9px] font-mono px-1.5 py-0.5 rounded-full ${
+                                isSelected
+                                  ? 'bg-white/25 text-white'
+                                  : 'bg-[#FF5A36]/15 text-[#FF5A36]'
+                              }`}
+                            >
+                              🔔{m.notifyTime}
+                            </span>
+                          )}
+                          <span
+                            className={`text-[9px] px-1.5 py-0.5 rounded-full shrink-0 ${
+                              isSelected
+                                ? 'bg-white/20 text-white'
+                                : 'bg-black/5 dark:bg-white/10 text-neutral-500 dark:text-neutral-400'
+                            }`}
+                          >
+                            {m.category === 'meal' ? 'Refeição' : m.category === 'post_meal' ? 'Pós' : 'Jejum'}
+                          </span>
+                        </div>
                       </button>
                     );
                   })}
                 </div>
               </div>
 
-              {/* Opção de Aplicação de Insulina logo após medir */}
+              {/* Escolha do Tipo de Registro: Refeição vs Pós-Refeição / Apenas Medição */}
               <div className="p-3.5 rounded-2xl bg-[#F6F6F7] dark:bg-[#222226] space-y-3">
-                <div className="flex items-center justify-between">
-                  <label className="text-xs font-bold text-[#111111] dark:text-white flex items-center gap-1.5">
-                    <Syringe className="w-3.5 h-3.5 text-[#FF5A36]" />
-                    <span>Aplicou insulina após esta medição?</span>
-                  </label>
-                </div>
-
+                <label className="text-xs font-bold text-[#111111] dark:text-white block">
+                  Como deseja cadastrar este momento?
+                </label>
                 <div className="grid grid-cols-2 gap-2">
                   <button
                     type="button"
-                    onClick={() => {
-                      setManualDidApplyInsulin(false);
-                      setManualInsulinUnits('');
-                    }}
-                    className={`py-2 px-3 rounded-xl text-xs font-bold transition ${
-                      !manualDidApplyInsulin
-                        ? 'bg-[#111111] dark:bg-white text-white dark:text-[#111111] shadow-xs'
-                        : 'bg-white dark:bg-[#161619] text-neutral-600 dark:text-neutral-300'
-                    }`}
-                  >
-                    Não apliquei
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setManualDidApplyInsulin(true)}
-                    className={`py-2 px-3 rounded-xl text-xs font-bold transition ${
-                      manualDidApplyInsulin
+                    onClick={() => setManualFlowMode('meal')}
+                    className={`py-2.5 px-3 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 ${
+                      manualFlowMode === 'meal'
                         ? 'bg-[#FF5A36] text-white shadow-xs'
                         : 'bg-white dark:bg-[#161619] text-neutral-600 dark:text-neutral-300'
                     }`}
                   >
-                    Sim, registrar dose
+                    <Utensils className="w-3.5 h-3.5" />
+                    <span>Refeição (Ir p/ Bolus)</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setManualFlowMode('post_meal')}
+                    className={`py-2.5 px-3 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 ${
+                      manualFlowMode === 'post_meal'
+                        ? 'bg-[#111111] dark:bg-white text-white dark:text-[#111111] shadow-xs'
+                        : 'bg-white dark:bg-[#161619] text-neutral-600 dark:text-neutral-300'
+                    }`}
+                  >
+                    <Clock className="w-3.5 h-3.5" />
+                    <span>Pós-Refeição / Medição</span>
                   </button>
                 </div>
 
-                {manualDidApplyInsulin && (
-                  <div className="space-y-2.5 pt-2 border-t border-neutral-200/70 dark:border-neutral-700/60 animate-in fade-in">
-                    <div className="grid grid-cols-2 gap-2">
-                      <div>
-                        <label className="text-[11px] font-bold text-neutral-600 dark:text-neutral-300 block mb-1">
-                          Quanto aplicou (U) *
-                        </label>
-                        <input
-                          type="number"
-                          step="0.5"
-                          min="0.5"
-                          max="150"
-                          required={manualDidApplyInsulin}
-                          placeholder="Ex: 4.0"
-                          value={manualInsulinUnits}
-                          onChange={(e) => setManualInsulinUnits(e.target.value)}
-                          className="w-full px-3 py-2 rounded-xl bg-white dark:bg-[#161619] text-sm font-mono font-extrabold text-[#111111] dark:text-white focus:outline-hidden focus:ring-2 focus:ring-[#FF5A36]"
-                        />
-                      </div>
-
-                      <div>
-                        <label className="text-[11px] font-bold text-neutral-600 dark:text-neutral-300 block mb-1">
-                          Tipo de Insulina
-                        </label>
-                        <select
-                          value={manualInsulinType}
-                          onChange={(e) => setManualInsulinType(e.target.value as 'rapid' | 'basal')}
-                          className="w-full px-2.5 py-2 rounded-xl bg-white dark:bg-[#161619] text-xs font-bold text-[#111111] dark:text-white"
-                        >
-                          <option value="rapid">Rápida ({profile.rapidInsulinName})</option>
-                          <option value="basal">Basal ({profile.basalInsulinName})</option>
-                        </select>
+                {/* FLUXO 1: SE FOR UMA REFEIÇÃO */}
+                {manualFlowMode === 'meal' && (
+                  <div className="space-y-3 pt-2 border-t border-neutral-200/70 dark:border-neutral-700/60 animate-in fade-in">
+                    <div>
+                      <label className="text-[11px] font-bold text-neutral-600 dark:text-neutral-300 block mb-1.5">
+                        Qual é a refeição? *
+                      </label>
+                      <div className="grid grid-cols-3 gap-1.5">
+                        {(
+                          [
+                            { id: 'cafe', label: 'Café da Manhã' },
+                            { id: 'almoco', label: 'Almoço' },
+                            { id: 'lanche', label: 'Lanche' },
+                            { id: 'jantar', label: 'Jantar' },
+                            { id: 'ceia', label: 'Ceia' },
+                            { id: 'outro', label: 'Outra' },
+                          ] as const
+                        ).map((mt) => (
+                          <button
+                            key={mt.id}
+                            type="button"
+                            onClick={() => setManualSelectedMealType(mt.id)}
+                            className={`py-2 px-2 rounded-xl text-[11px] font-bold transition ${
+                              manualSelectedMealType === mt.id
+                                ? 'bg-[#111111] dark:bg-white text-white dark:text-[#111111]'
+                                : 'bg-white dark:bg-[#161619] text-neutral-600 dark:text-neutral-300'
+                            }`}
+                          >
+                            {mt.label}
+                          </button>
+                        ))}
                       </div>
                     </div>
 
-                    {/* Botões rápidos de dose */}
-                    <div className="flex items-center gap-1 flex-wrap">
-                      {[2, 4, 6, 8, 10, 18].map((u) => (
+                    {/* Opção de Cadastrar os Alimentos (Redireciona direto para a página de Refeições!) */}
+                    <div className="space-y-2">
+                      <label className="text-[11px] font-bold text-neutral-600 dark:text-neutral-300 block">
+                        Deseja cadastrar os alimentos para calcular a correção exata?
+                      </label>
+                      <div className="grid grid-cols-2 gap-2">
                         <button
-                          key={u}
                           type="button"
-                          onClick={() => setManualInsulinUnits(String(u))}
-                          className={`px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold transition ${
-                            Number(manualInsulinUnits) === u
-                              ? 'bg-[#FF5A36] text-white'
+                          onClick={handleRedirectFromModalToMealsPage}
+                          className="py-2.5 px-3 rounded-xl text-xs font-bold transition bg-[#FF5A36] hover:bg-[#e84c29] text-white shadow-xs flex items-center justify-center gap-1.5"
+                        >
+                          <Utensils className="w-3.5 h-3.5 shrink-0" />
+                          <span>Sim, cadastrar alimentos</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setManualRegisterMealFoods(false)}
+                          className={`py-2.5 px-3 rounded-xl text-xs font-bold transition ${
+                            !manualRegisterMealFoods
+                              ? 'bg-[#111111] dark:bg-white text-white dark:text-[#111111]'
                               : 'bg-white dark:bg-[#161619] text-neutral-600 dark:text-neutral-300'
                           }`}
                         >
-                          {u}U
+                          Não cadastrar alimentos
                         </button>
-                      ))}
+                      </div>
                     </div>
 
-                    <div>
-                      <label className="text-[11px] font-bold text-neutral-600 dark:text-neutral-300 block mb-1">
-                        Local de Aplicação
-                      </label>
-                      <select
-                        value={selectedSite}
-                        onChange={(e) => setSelectedSite(e.target.value as any)}
-                        className="w-full px-3 py-2 rounded-xl bg-white dark:bg-[#161619] text-xs font-semibold text-[#111111] dark:text-white"
-                      >
-                        {INJECTION_SITES.map((s) => (
-                          <option key={s.id} value={s.id}>
-                            {s.name} ({s.region})
-                          </option>
-                        ))}
-                      </select>
+                    <div className="p-2.5 rounded-xl bg-[#FF5A36]/10 text-[#FF5A36] text-[11px] font-semibold flex items-center gap-2">
+                      <Calculator className="w-4 h-4 shrink-0" />
+                      <span>
+                        Ao clicar em <strong>Sim, cadastrar alimentos</strong>, sua medição será salva e você será levado direto para a <strong>Página de Refeições</strong> (sem poluir este modal).
+                      </span>
                     </div>
+                  </div>
+                )}
+
+                {/* FLUXO 2: SE FOR SOMENTE PÓS-REFEIÇÃO OU MEDIÇÃO ISOLADA */}
+                {manualFlowMode === 'post_meal' && (
+                  <div className="space-y-3 pt-2 border-t border-neutral-200/70 dark:border-neutral-700/60 animate-in fade-in">
+                    <div className="flex items-center justify-between">
+                      <label className="text-xs font-bold text-[#111111] dark:text-white flex items-center gap-1.5">
+                        <Syringe className="w-3.5 h-3.5 text-[#FF5A36]" />
+                        <span>Aplicou insulina nesta medição pós-refeição?</span>
+                      </label>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setManualDidApplyInsulin(false);
+                          setManualInsulinUnits('');
+                        }}
+                        className={`py-2 px-3 rounded-xl text-xs font-bold transition ${
+                          !manualDidApplyInsulin
+                            ? 'bg-[#111111] dark:bg-white text-white dark:text-[#111111] shadow-xs'
+                            : 'bg-white dark:bg-[#161619] text-neutral-600 dark:text-neutral-300'
+                        }`}
+                      >
+                        Não apliquei
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setManualDidApplyInsulin(true)}
+                        className={`py-2 px-3 rounded-xl text-xs font-bold transition ${
+                          manualDidApplyInsulin
+                            ? 'bg-[#FF5A36] text-white shadow-xs'
+                            : 'bg-white dark:bg-[#161619] text-neutral-600 dark:text-neutral-300'
+                        }`}
+                      >
+                        Sim, informar dose
+                      </button>
+                    </div>
+
+                    {manualDidApplyInsulin && (
+                      <div className="space-y-2.5 pt-2 border-t border-neutral-200/70 dark:border-neutral-700/60 animate-in fade-in">
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <label className="text-[11px] font-bold text-neutral-600 dark:text-neutral-300 block mb-1">
+                              Qual dose aplicada (U) *
+                            </label>
+                            <input
+                              type="number"
+                              step="0.5"
+                              min="0.5"
+                              max="150"
+                              required={manualDidApplyInsulin}
+                              placeholder="Ex: 4.0"
+                              value={manualInsulinUnits}
+                              onChange={(e) => setManualInsulinUnits(e.target.value)}
+                              className="w-full px-3 py-2 rounded-xl bg-white dark:bg-[#161619] text-sm font-mono font-extrabold text-[#111111] dark:text-white focus:outline-hidden focus:ring-2 focus:ring-[#FF5A36]"
+                            />
+                          </div>
+
+                          <div>
+                            <label className="text-[11px] font-bold text-neutral-600 dark:text-neutral-300 block mb-1">
+                              Tipo de Insulina
+                            </label>
+                            <select
+                              value={manualInsulinType}
+                              onChange={(e) => setManualInsulinType(e.target.value as 'rapid' | 'basal')}
+                              className="w-full px-2.5 py-2 rounded-xl bg-white dark:bg-[#161619] text-xs font-bold text-[#111111] dark:text-white"
+                            >
+                              <option value="rapid">Rápida ({profile.rapidInsulinName})</option>
+                              <option value="basal">Basal ({profile.basalInsulinName})</option>
+                            </select>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-1 flex-wrap">
+                          {[2, 4, 6, 8, 10, 18].map((u) => (
+                            <button
+                              key={u}
+                              type="button"
+                              onClick={() => setManualInsulinUnits(String(u))}
+                              className={`px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold transition ${
+                                Number(manualInsulinUnits) === u
+                                  ? 'bg-[#FF5A36] text-white'
+                                  : 'bg-white dark:bg-[#161619] text-neutral-600 dark:text-neutral-300'
+                              }`}
+                            >
+                              {u}U
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -4112,15 +5735,21 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => setIsManualReadingModalOpen(false)}
-                  className="flex-1 py-2.5 text-xs font-bold bg-[#F6F6F7] dark:bg-[#222226] text-neutral-700 dark:text-neutral-300 rounded-full transition"
+                  className="py-2.5 px-4 text-xs font-bold bg-[#F6F6F7] dark:bg-[#222226] text-neutral-700 dark:text-neutral-300 rounded-full transition"
                 >
                   Cancelar
                 </button>
                 <button
                   type="submit"
-                  className="flex-1 py-2.5 bg-[#FF5A36] hover:bg-[#e84c29] text-white font-bold text-xs rounded-full shadow-xs transition"
+                  className="flex-1 py-2.5 px-4 bg-[#FF5A36] hover:bg-[#e84c29] text-white font-bold text-xs rounded-full shadow-xs transition"
                 >
-                  {manualDidApplyInsulin ? 'Salvar Medição + Dose' : 'Salvar Medição'}
+                  {manualFlowMode === 'meal'
+                    ? manualRegisterMealFoods
+                      ? 'Salvar Medição & Ir para Página de Refeições'
+                      : 'Salvar Refeição + Medição & Ir para Calculadora de Bolus'
+                    : manualDidApplyInsulin
+                    ? 'Salvar Medição + Aplicação'
+                    : 'Salvar Medição'}
                 </button>
               </div>
             </form>

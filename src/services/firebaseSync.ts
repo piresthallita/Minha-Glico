@@ -215,6 +215,18 @@ export async function saveMealToFirestore(userId: string, meal: MealRecord): Pro
 }
 
 /**
+ * Deletes a meal record from Firestore
+ */
+export async function deleteMealFromFirestore(userId: string, mealId: string): Promise<void> {
+  const path = `users/${userId}/meals/${mealId}`;
+  try {
+    await deleteDoc(doc(db, 'users', userId, 'meals', mealId));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, path);
+  }
+}
+
+/**
  * Saves an insulin dose record in Firestore
  */
 export async function saveDoseToFirestore(userId: string, dose: InsulinDoseRecord): Promise<void> {

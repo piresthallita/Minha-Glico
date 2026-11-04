@@ -1,20 +1,36 @@
-export type GlucoseContext =
-  | 'jejum'
-  | 'cafe_manha'
-  | 'pos_cafe'
-  | 'almoco'
-  | 'pos_almoco'
-  | 'jantar'
-  | 'pos_jantar'
-  | 'madrugada'
-  | 'fasting'
-  | 'pre_meal'
-  | 'post_meal_1h'
-  | 'post_meal_2h'
-  | 'bedtime'
-  | 'dawn'
-  | 'exercise'
-  | 'other';
+export type GlucoseContext = string;
+
+export type MomentCategory = 'meal' | 'post_meal' | 'fasting';
+
+export interface CustomGlucoseMoment {
+  id: string;
+  label: string;
+  shortLabel: string;
+  category: MomentCategory;
+  defaultMealType?: MealRecord['mealType'];
+  badgeColor?: string;
+  notifyTime?: string; // HH:MM format (ex: "07:30")
+  notifyEnabled?: boolean;
+}
+
+export interface NotificationPreferences {
+  enabled: boolean;
+  momentAlerts: boolean; // Alertas nos horários dos Momentos da Medição
+  postMealTimer: boolean; // Alerta de 2h pós-refeição
+  basalReminder: boolean; // Lembrete da insulina basal diária
+  waterReminder: boolean; // Lembretes de hidratação (água)
+  hypoHyperAlerts: boolean; // Alertas críticos de hipo (<70) e hiper (>250)
+  bedtimeReminder: boolean; // Lembrete de glicemia ao deitar
+  customReminders: boolean; // Alarmes personalizados
+}
+
+export interface EnabledRoutineGoals {
+  fasting: boolean;
+  basal: boolean;
+  water: boolean;
+  exercise: boolean;
+  bedtime: boolean;
+}
 
 export type GlucoseTrendArrow =
   | 'rapid_rise'
@@ -38,6 +54,10 @@ export interface GlucoseReading {
   insulinTypeApplied?: 'rapid' | 'basal';
   insulinNameApplied?: string;
   linkedDoseId?: string;
+  linkedMealId?: string;
+  mealType?: MealRecord['mealType'];
+  mealTitle?: string;
+  mealCarbs?: number;
 }
 
 export interface FoodItem {
@@ -82,11 +102,16 @@ export interface MealRecord {
   photoUrl?: string;
   aiAnalysisNotes?: string;
   glycemicImpact?: string;
+  linkedReadingId?: string;
+  bgAtMeal?: number;
+  linkedDoseId?: string;
+  insulinUnitsApplied?: number;
 }
 
 export interface FavoriteMeal {
   id: string;
-  name: string;
+  name: string; // Apelido / Nome de fácil acesso (ex: "Café Campeão")
+  nickname?: string;
   mealType: MealRecord['mealType'];
   items: MealPlateItem[];
   totalCarbs: number;
@@ -118,9 +143,10 @@ export interface InsulinDoseRecord {
   iobDeductedUnits?: number;
   bgAtTime?: number;
   carbsCovered?: number;
-  injectionSite: InjectionSite;
+  injectionSite?: InjectionSite;
   notes?: string;
   linkedReadingId?: string;
+  linkedMealId?: string;
   context?: GlucoseContext;
 }
 
@@ -142,6 +168,11 @@ export interface PatientProfile {
   emergencyContactName: string;
   emergencyContactPhone: string;
   heightCm?: number;
+  customMoments?: CustomGlucoseMoment[];
+  notificationPrefs?: NotificationPreferences;
+  enabledRoutineGoals?: EnabledRoutineGoals;
+  routineHistory?: DailyRoutineLog[];
+  favoriteMeals?: FavoriteMeal[];
 }
 
 export interface WeightRecord {
@@ -180,7 +211,7 @@ export interface DailyRoutineLog {
   basalTime?: string;
   exerciseMinutes: number;
   exerciseType?: string;
-  footCheckDone: boolean;
+  footCheckDone?: boolean;
   footCheckNotes?: string;
   bedtimeCheckDone: boolean;
   bedtimeBgValue?: number;
