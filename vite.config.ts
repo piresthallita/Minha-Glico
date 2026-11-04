@@ -1,11 +1,13 @@
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
+import fs from 'fs';
 import {defineConfig} from 'vite';
 import {VitePWA} from 'vite-plugin-pwa';
 
 export default defineConfig(() => {
   return {
+    base: './',
     plugins: [
       react(),
       tailwindcss(),
@@ -13,15 +15,15 @@ export default defineConfig(() => {
         registerType: 'autoUpdate',
         includeAssets: ['favicon.ico', 'apple-touch-icon.png', 'icon.svg'],
         manifest: {
-          id: '/',
+          id: './',
           name: 'Minha Glico | Monitoramento de Glicose & Bolus',
           short_name: 'Minha Glico',
           description: 'Ecossistema clínico integrado para monitoramento de glicose, controle de refeições, contagem de carboidratos e cálculo de bolus.',
-          theme_color: '#2563eb',
-          background_color: '#0f172a',
+          theme_color: '#FF5A36',
+          background_color: '#0E0E11',
           display: 'standalone',
-          start_url: '/',
-          scope: '/',
+          start_url: './',
+          scope: './',
           icons: [
             {
               src: '/pwa-192x192.png',
@@ -82,6 +84,16 @@ export default defineConfig(() => {
           type: 'module',
         },
       }),
+      {
+        name: 'copy-404-for-github-pages',
+        closeBundle() {
+          const distIndex = path.resolve(import.meta.dirname, 'dist/index.html');
+          const dist404 = path.resolve(import.meta.dirname, 'dist/404.html');
+          if (fs.existsSync(distIndex)) {
+            fs.copyFileSync(distIndex, dist404);
+          }
+        },
+      },
     ],
     resolve: {
       alias: {
