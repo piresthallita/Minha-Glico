@@ -1159,8 +1159,15 @@ export default function App() {
         }`}
       >
         <div className="flex flex-col items-center gap-3 text-center">
-          <div className="w-12 h-12 rounded-2xl bg-[#FF5A36] text-white flex items-center justify-center shadow-lg shadow-orange-500/25 animate-pulse">
-            <Droplet className="w-6 h-6 fill-white text-white" />
+          <div className="w-12 h-12 rounded-2xl bg-white dark:bg-[#161619] border border-neutral-200 dark:border-neutral-800 flex items-center justify-center p-2 shadow-lg shadow-orange-500/10 animate-pulse">
+            <img
+              src="./logo.png"
+              onError={(e) => {
+                (e.currentTarget as HTMLImageElement).src = './assets/aistudio/image_573043af.png';
+              }}
+              alt="Minha Glico Logo"
+              className="w-full h-full object-contain"
+            />
           </div>
           <div className="space-y-1">
             <h2 className="font-extrabold text-base tracking-tight">Minha Glico</h2>
@@ -1215,11 +1222,18 @@ export default function App() {
             </button>
 
             <div
-              className="flex items-center gap-2 cursor-pointer"
+              className="flex items-center gap-2.5 cursor-pointer select-none"
               onClick={() => setActivePage('today')}
             >
-              <div className="w-9 h-9 rounded-full bg-[#111111] dark:bg-[#FF5A36] flex items-center justify-center text-white shadow-xs">
-                <Droplet className="w-4 h-4 fill-[#FF5A36] text-[#FF5A36] dark:fill-white dark:text-white" />
+              <div className="w-9 h-9 rounded-xl bg-white dark:bg-[#161619] border border-neutral-200/80 dark:border-neutral-800 flex items-center justify-center p-1.5 shadow-xs hover:scale-105 transition-transform shrink-0">
+                <img
+                  src="./logo.png"
+                  onError={(e) => {
+                    (e.currentTarget as HTMLImageElement).src = './assets/aistudio/image_573043af.png';
+                  }}
+                  alt="Minha Glico Logo"
+                  className="w-full h-full object-contain"
+                />
               </div>
               <span className="font-bold text-base sm:text-lg tracking-tight text-[#111111] dark:text-white whitespace-nowrap hidden xs:inline">
                 Minha Glico

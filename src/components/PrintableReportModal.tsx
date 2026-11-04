@@ -235,11 +235,23 @@ export const PrintableReportModal: React.FC<PrintableReportModalProps> = ({
           {/* Header Banner */}
           <div className="border-b-2 border-blue-600 pb-4">
             <div className="flex items-start justify-between">
-              <div>
-                <h1 className="text-2xl font-black text-blue-900 dark:text-blue-400">Minha Glico</h1>
-                <p className="text-xs text-gray-500 dark:text-slate-400 uppercase tracking-wider font-semibold">
-                  Relatório Ambulatorial de Perfil Glicêmico & Nutricional
-                </p>
+              <div className="flex items-center gap-3">
+                <div className="w-11 h-11 rounded-xl bg-white border border-gray-200 dark:border-slate-700 flex items-center justify-center p-1.5 shadow-xs shrink-0">
+                  <img
+                    src="./logo.png"
+                    onError={(e) => {
+                      (e.currentTarget as HTMLImageElement).src = './assets/aistudio/image_573043af.png';
+                    }}
+                    alt="Minha Glico Logo"
+                    className="w-full h-full object-contain"
+                  />
+                </div>
+                <div>
+                  <h1 className="text-2xl font-black text-blue-900 dark:text-blue-400">Minha Glico</h1>
+                  <p className="text-xs text-gray-500 dark:text-slate-400 uppercase tracking-wider font-semibold">
+                    Relatório Ambulatorial de Perfil Glicêmico & Nutricional
+                  </p>
+                </div>
               </div>
               <div className="text-right text-xs text-gray-500 dark:text-slate-400">
                 <p>Data de emissão: <strong>{new Date().toLocaleDateString('pt-BR')}</strong></p>

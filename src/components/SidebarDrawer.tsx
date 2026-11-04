@@ -109,12 +109,24 @@ export const SidebarDrawer: React.FC<SidebarDrawerProps> = ({
         <div className="p-5 border-b border-neutral-100 dark:border-neutral-800 bg-[#FAFAFB] dark:bg-[#19191D]">
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-2.5">
-              <div className="w-8 h-8 rounded-full bg-[#111111] dark:bg-[#FF5A36] flex items-center justify-center text-white shadow-xs">
-                <Droplet className="w-4 h-4 fill-[#FF5A36] text-[#FF5A36] dark:fill-white dark:text-white" />
+              <div className="w-9 h-9 rounded-xl bg-white dark:bg-[#1A1A1E] border border-neutral-200/80 dark:border-neutral-800 flex items-center justify-center p-1.5 shadow-xs shrink-0">
+                <img
+                  src="./logo.png"
+                  onError={(e) => {
+                    (e.currentTarget as HTMLImageElement).src = './assets/aistudio/image_573043af.png';
+                  }}
+                  alt="Minha Glico Logo"
+                  className="w-full h-full object-contain"
+                />
               </div>
-              <span className="font-extrabold text-base tracking-tight text-[#111111] dark:text-white">
-                Minha Glico
-              </span>
+              <div>
+                <span className="font-extrabold text-base tracking-tight text-[#111111] dark:text-white block leading-tight">
+                  Minha Glico
+                </span>
+                <span className="text-[10px] text-neutral-500 dark:text-neutral-400 font-medium">
+                  Controle Glicêmico & Bolus
+                </span>
+              </div>
             </div>
             <button
               onClick={onClose}

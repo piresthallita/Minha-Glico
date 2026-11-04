@@ -215,12 +215,19 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
       {/* Top Brand Bar */}
       <div className="max-w-md w-full mx-auto pt-2 pb-4 flex items-center justify-between">
         <div className="flex items-center gap-2.5">
-          <div className="w-10 h-10 rounded-xl bg-[#FF5722] text-white flex items-center justify-center shadow-md shadow-orange-500/20">
-            <Activity className="w-6 h-6 stroke-[2.5]" />
+          <div className="w-10 h-10 rounded-xl bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-800 flex items-center justify-center p-1.5 shadow-md shadow-orange-500/10 shrink-0">
+            <img
+              src="./logo.png"
+              onError={(e) => {
+                (e.currentTarget as HTMLImageElement).src = './assets/aistudio/image_573043af.png';
+              }}
+              alt="Minha Glico Logo"
+              className="w-full h-full object-contain"
+            />
           </div>
           <div>
             <div className="flex items-center gap-1.5">
-              <span className="font-bold text-lg tracking-tight">MinhaGlico</span>
+              <span className="font-bold text-lg tracking-tight">Minha Glico</span>
               <span className="text-[10px] font-semibold tracking-wider uppercase px-1.5 py-0.5 rounded bg-orange-100 dark:bg-orange-950/60 text-[#FF5722] border border-orange-200 dark:border-orange-900/50">
                 PRO
               </span>

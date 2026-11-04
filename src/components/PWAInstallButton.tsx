@@ -73,8 +73,15 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({ variant = 'c
         <div className="p-4 rounded-2xl bg-gradient-to-br from-orange-50/90 via-amber-50/40 to-stone-100/50 dark:from-[#231A17] dark:via-[#1E1919] dark:to-[#171518] border border-orange-200/80 dark:border-orange-900/60 shadow-xs space-y-3">
           <div className="flex items-start justify-between gap-2">
             <div className="flex items-center gap-2.5">
-              <div className="w-9 h-9 rounded-xl bg-[#FF5A36] text-white flex items-center justify-center shadow-md shadow-orange-500/20 shrink-0">
-                <Smartphone className="w-4.5 h-4.5 stroke-[2.2]" />
+              <div className="w-9 h-9 rounded-xl bg-white dark:bg-[#1A1A1E] border border-orange-200/80 dark:border-orange-900/60 flex items-center justify-center p-1.5 shadow-xs shrink-0">
+                <img
+                  src="./logo.png"
+                  onError={(e) => {
+                    (e.currentTarget as HTMLImageElement).src = './assets/aistudio/image_573043af.png';
+                  }}
+                  alt="Minha Glico Logo"
+                  className="w-full h-full object-contain"
+                />
               </div>
               <div className="min-w-0">
                 <div className="flex items-center gap-1.5">
@@ -154,9 +161,16 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({ variant = 'c
           <div className="bg-white dark:bg-[#161619] border border-neutral-200 dark:border-neutral-800 rounded-3xl max-w-sm w-full p-5 shadow-2xl animate-in fade-in zoom-in duration-150 text-neutral-900 dark:text-neutral-100">
             {/* Header */}
             <div className="flex items-center justify-between pb-3 border-b border-neutral-100 dark:border-neutral-800">
-              <div className="flex items-center gap-2">
-                <div className="p-1.5 rounded-xl bg-orange-100 dark:bg-orange-950/60 text-[#FF5A36]">
-                  <Smartphone className="w-4 h-4" />
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-xl bg-white dark:bg-[#1A1A1E] border border-orange-200 dark:border-orange-900/60 p-1 flex items-center justify-center shrink-0 shadow-xs">
+                  <img
+                    src="./logo.png"
+                    onError={(e) => {
+                      (e.currentTarget as HTMLImageElement).src = './assets/aistudio/image_573043af.png';
+                    }}
+                    alt="Minha Glico Logo"
+                    className="w-full h-full object-contain"
+                  />
                 </div>
                 <h4 className="font-bold text-sm">Instalar Minha Glico</h4>
               </div>
