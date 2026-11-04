@@ -62,14 +62,14 @@ export const DailyRoutineView: React.FC<DailyRoutineViewProps> = ({
   const [showBasalForm, setShowBasalForm] = useState(false);
 
   // Foot check checklist state
-  const [footCheck1, setFootCheck1] = useState(true);
-  const [footCheck2, setFootCheck2] = useState(true);
-  const [footCheck3, setFootCheck3] = useState(true);
+  const [footCheck1, setFootCheck1] = useState(Boolean(routineLog.footCheckDone));
+  const [footCheck2, setFootCheck2] = useState(Boolean(routineLog.footCheckDone));
+  const [footCheck3, setFootCheck3] = useState(Boolean(routineLog.footCheckDone));
 
   // Water helper calculations
   const waterPct = Math.min(
     100,
-    Math.round((routineLog.waterMl / routineLog.waterGoalMl) * 100)
+    Math.round((routineLog.waterMl / (routineLog.waterGoalMl || 2500)) * 100)
   );
 
   const handleAddWater = (ml: number) => {
@@ -86,8 +86,10 @@ export const DailyRoutineView: React.FC<DailyRoutineViewProps> = ({
     {
       id: 'fasting',
       title: 'Glicemia em Jejum',
-      completed: true, // initial readings have fasting
-      subtitle: 'Meta matinal aferida',
+      completed: Boolean(latestReading),
+      subtitle: latestReading
+        ? `Medida hoje (${latestReading.value} mg/dL)`
+        : 'Pendente hoje',
     },
     {
       id: 'basal',

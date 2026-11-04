@@ -21,6 +21,7 @@ import {
   ShieldCheck,
   ChevronRight,
   User as UserIcon,
+  Trash2,
 } from 'lucide-react';
 import { PatientProfile } from '../types';
 import { User } from 'firebase/auth';
@@ -54,6 +55,7 @@ interface SidebarDrawerProps {
   onOpenBluetooth: () => void;
   onOpenReportModal: () => void;
   onOpenManualReading: () => void;
+  onOpenResetAll: () => void;
 }
 
 export const SidebarDrawer: React.FC<SidebarDrawerProps> = ({
@@ -71,6 +73,7 @@ export const SidebarDrawer: React.FC<SidebarDrawerProps> = ({
   onOpenSos,
   onOpenBluetooth,
   onOpenReportModal,
+  onOpenResetAll,
 }) => {
   if (!isOpen) return null;
 
@@ -395,6 +398,22 @@ export const SidebarDrawer: React.FC<SidebarDrawerProps> = ({
                 </div>
                 <span className="text-[10px] text-neutral-400">
                   {isDark ? 'Escuro' : 'Claro'}
+                </span>
+              </button>
+
+              <button
+                onClick={() => {
+                  onClose();
+                  onOpenResetAll();
+                }}
+                className="w-full flex items-center justify-between px-3.5 py-2.5 rounded-2xl text-xs font-bold text-red-600 dark:text-red-400 bg-red-500/10 hover:bg-red-500/20 transition"
+              >
+                <div className="flex items-center gap-3">
+                  <Trash2 className="w-4 h-4 text-red-600 dark:text-red-400" />
+                  <span>Zerar Tudo (Limpar Dados)</span>
+                </div>
+                <span className="text-[10px] font-extrabold px-1.5 py-0.5 rounded-md bg-red-600 text-white">
+                  2 Etapas
                 </span>
               </button>
             </div>

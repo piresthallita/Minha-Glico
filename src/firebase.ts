@@ -12,7 +12,8 @@ import {
   User,
 } from 'firebase/auth';
 import {
-  getFirestore,
+  initializeFirestore,
+  setLogLevel,
   doc,
   getDocFromServer,
   collection,
@@ -25,8 +26,18 @@ import firebaseConfig from '../firebase-applet-config.json';
 
 const app = initializeApp(firebaseConfig);
 
-// CRITICAL: Must pass firestoreDatabaseId
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+// Suppress internal @firebase/firestore transient WebChannel retry logs that trigger error overlays
+setLogLevel('silent');
+
+// CRITICAL: Must pass firestoreDatabaseId and auto-detect long polling for iframe/proxy compatibility
+export const db = initializeFirestore(
+  app,
+  {
+    experimentalAutoDetectLongPolling: true,
+    ignoreUndefinedProperties: true,
+  },
+  firebaseConfig.firestoreDatabaseId
+);
 export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
 

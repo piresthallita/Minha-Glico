@@ -18,6 +18,7 @@ import {
   ReminderItem,
   WeightRecord,
 } from '../types';
+import { isLegacyDemoId } from '../data/initialData';
 
 export interface UserCloudData {
   profile?: PatientProfile;
@@ -29,7 +30,8 @@ export interface UserCloudData {
 }
 
 /**
- * Loads all data for a specific authenticated user from Firestore
+ * Loads all data for a specific authenticated user from Firestore.
+ * Automatically filters out and cleans up any legacy demo/sample records.
  */
 export async function loadUserDataFromFirestore(userId: string): Promise<UserCloudData> {
   const result: UserCloudData = {
@@ -45,7 +47,16 @@ export async function loadUserDataFromFirestore(userId: string): Promise<UserClo
   try {
     const profileSnap = await getDoc(doc(db, 'users', userId));
     if (profileSnap.exists()) {
-      result.profile = profileSnap.data() as PatientProfile;
+      const data = profileSnap.data() as PatientProfile;
+      // Clean legacy default sample name if present
+      if (data.name === 'Paciente Exemplo') {
+        data.name = 'Meu Perfil';
+      }
+      if (data.emergencyContactName === 'Dr. Lucas (Endocrinologista)') {
+        data.emergencyContactName = '';
+        data.emergencyContactPhone = '';
+      }
+      result.profile = data;
     }
   } catch (error) {
     handleFirestoreError(error, OperationType.GET, profilePath);
@@ -56,7 +67,16 @@ export async function loadUserDataFromFirestore(userId: string): Promise<UserClo
   try {
     const q = query(collection(db, 'users', userId, 'readings'), orderBy('timestamp', 'desc'), limit(150));
     const snap = await getDocs(q);
-    result.readings = snap.docs.map((d) => d.data() as GlucoseReading);
+    const validReadings: GlucoseReading[] = [];
+    snap.docs.forEach((d) => {
+      const item = d.data() as GlucoseReading;
+      if (isLegacyDemoId(item.id || d.id)) {
+        deleteDoc(d.ref).catch(() => {});
+      } else {
+        validReadings.push(item);
+      }
+    });
+    result.readings = validReadings;
   } catch (error) {
     handleFirestoreError(error, OperationType.GET, readingsPath);
   }
@@ -65,7 +85,16 @@ export async function loadUserDataFromFirestore(userId: string): Promise<UserClo
   const mealsPath = `users/${userId}/meals`;
   try {
     const snap = await getDocs(collection(db, 'users', userId, 'meals'));
-    result.meals = snap.docs.map((d) => d.data() as MealRecord);
+    const validMeals: MealRecord[] = [];
+    snap.docs.forEach((d) => {
+      const item = d.data() as MealRecord;
+      if (isLegacyDemoId(item.id || d.id)) {
+        deleteDoc(d.ref).catch(() => {});
+      } else {
+        validMeals.push(item);
+      }
+    });
+    result.meals = validMeals;
   } catch (error) {
     handleFirestoreError(error, OperationType.GET, mealsPath);
   }
@@ -74,7 +103,16 @@ export async function loadUserDataFromFirestore(userId: string): Promise<UserClo
   const dosesPath = `users/${userId}/doses`;
   try {
     const snap = await getDocs(collection(db, 'users', userId, 'doses'));
-    result.doses = snap.docs.map((d) => d.data() as InsulinDoseRecord);
+    const validDoses: InsulinDoseRecord[] = [];
+    snap.docs.forEach((d) => {
+      const item = d.data() as InsulinDoseRecord;
+      if (isLegacyDemoId(item.id || d.id)) {
+        deleteDoc(d.ref).catch(() => {});
+      } else {
+        validDoses.push(item);
+      }
+    });
+    result.doses = validDoses;
   } catch (error) {
     handleFirestoreError(error, OperationType.GET, dosesPath);
   }
@@ -83,7 +121,16 @@ export async function loadUserDataFromFirestore(userId: string): Promise<UserClo
   const remindersPath = `users/${userId}/reminders`;
   try {
     const snap = await getDocs(collection(db, 'users', userId, 'reminders'));
-    result.reminders = snap.docs.map((d) => d.data() as ReminderItem);
+    const validReminders: ReminderItem[] = [];
+    snap.docs.forEach((d) => {
+      const item = d.data() as ReminderItem;
+      if (isLegacyDemoId(item.id || d.id)) {
+        deleteDoc(d.ref).catch(() => {});
+      } else {
+        validReminders.push(item);
+      }
+    });
+    result.reminders = validReminders;
   } catch (error) {
     handleFirestoreError(error, OperationType.GET, remindersPath);
   }
@@ -92,7 +139,16 @@ export async function loadUserDataFromFirestore(userId: string): Promise<UserClo
   const weightsPath = `users/${userId}/weights`;
   try {
     const snap = await getDocs(collection(db, 'users', userId, 'weights'));
-    result.weights = snap.docs.map((d) => d.data() as WeightRecord);
+    const validWeights: WeightRecord[] = [];
+    snap.docs.forEach((d) => {
+      const item = d.data() as WeightRecord;
+      if (isLegacyDemoId(item.id || d.id)) {
+        deleteDoc(d.ref).catch(() => {});
+      } else {
+        validWeights.push(item);
+      }
+    });
+    result.weights = validWeights;
   } catch (error) {
     handleFirestoreError(error, OperationType.GET, weightsPath);
   }
@@ -128,6 +184,18 @@ export async function saveReadingToFirestore(userId: string, reading: GlucoseRea
     });
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
+  }
+}
+
+/**
+ * Deletes a glucose reading from Firestore
+ */
+export async function deleteReadingFromFirestore(userId: string, readingId: string): Promise<void> {
+  const path = `users/${userId}/readings/${readingId}`;
+  try {
+    await deleteDoc(doc(db, 'users', userId, 'readings', readingId));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, path);
   }
 }
 
@@ -213,4 +281,26 @@ export async function deleteWeightFromFirestore(userId: string, weightId: string
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, path);
   }
+}
+
+/**
+ * Permanently deletes all user subcollection documents in Firestore and resets profile
+ */
+export async function resetAllUserDataInFirestore(
+  userId: string,
+  cleanProfile: PatientProfile
+): Promise<void> {
+  const subcollections = ['readings', 'meals', 'doses', 'reminders', 'weights'] as const;
+
+  for (const subcol of subcollections) {
+    const subPath = `users/${userId}/${subcol}`;
+    try {
+      const snap = await getDocs(collection(db, 'users', userId, subcol));
+      await Promise.all(snap.docs.map((d) => deleteDoc(d.ref)));
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, subPath);
+    }
+  }
+
+  await saveProfileToFirestore(userId, cleanProfile);
 }

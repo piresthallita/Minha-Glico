@@ -1,17 +1,14 @@
 import {createRoot} from 'react-dom/client';
 import App from './App.tsx';
 import './index.css';
-import { registerSW } from 'virtual:pwa-register';
 
-// Register PWA service worker immediately for installability & offline caching
-registerSW({
-  immediate: true,
-  onNeedRefresh() {
-    console.log('[PWA] Nova versão disponível');
-  },
-  onOfflineReady() {
-    console.log('[PWA] Pronto para uso offline');
-  },
-});
+// Unregister any stale dev service workers that could intercept Firestore WebChannel streams in dev mode
+if (import.meta.env.DEV && 'serviceWorker' in navigator) {
+  navigator.serviceWorker.getRegistrations().then((registrations) => {
+    for (const registration of registrations) {
+      registration.unregister();
+    }
+  });
+}
 
 createRoot(document.getElementById('root')!).render(<App />);

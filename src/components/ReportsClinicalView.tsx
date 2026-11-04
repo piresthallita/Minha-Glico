@@ -63,15 +63,15 @@ export const ReportsClinicalView: React.FC<ReportsClinicalViewProps> = ({
   const avgFasting =
     fasting.length > 0
       ? Math.round(fasting.reduce((a, b) => a + b.value, 0) / fasting.length)
-      : 104;
+      : 0;
   const avgPostMeal =
     postMeal.length > 0
       ? Math.round(postMeal.reduce((a, b) => a + b.value, 0) / postMeal.length)
-      : 142;
+      : 0;
   const avgDawn =
     dawn.length > 0
       ? Math.round(dawn.reduce((a, b) => a + b.value, 0) / dawn.length)
-      : 112;
+      : 0;
 
   return (
     <div className="space-y-4 max-w-7xl mx-auto">

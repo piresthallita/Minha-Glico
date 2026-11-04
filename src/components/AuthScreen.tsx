@@ -142,6 +142,18 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
 
       setLoading(true);
       try {
+        // Clear all local data first so the new account starts 100% zeroed
+        [
+          'mg_readings',
+          'mg_meals',
+          'mg_doses',
+          'mg_weights',
+          'mg_favorites',
+          'mg_reminders',
+          'mg_fitness',
+          'mg_routine_v2',
+        ].forEach((k) => localStorage.removeItem(k));
+
         const newUser = await registerWithEmailPassword(name, email, password);
 
         // Build personalized initial profile for this new account
@@ -162,12 +174,6 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
 
         // Save fresh profile to Firestore
         await saveProfileToFirestore(newUser.uid, newProfile);
-
-        // Also clean up local dummy records so the new user starts genuinely from scratch
-        localStorage.removeItem('mg_readings');
-        localStorage.removeItem('mg_meals');
-        localStorage.removeItem('mg_doses');
-        localStorage.removeItem('mg_weights');
         localStorage.setItem('mg_profile', JSON.stringify(newProfile));
 
         onAuthSuccess(newProfile);

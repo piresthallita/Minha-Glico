@@ -69,6 +69,7 @@ import {
   INITIAL_FITNESS_DATA,
   getInitialWeights,
   getInitialRoutineLog,
+  isLegacyDemoId,
 } from './data/initialData';
 
 import {
@@ -95,12 +96,14 @@ import {
   loadUserDataFromFirestore,
   saveProfileToFirestore,
   saveReadingToFirestore,
+  deleteReadingFromFirestore,
   saveMealToFirestore,
   saveDoseToFirestore,
   saveReminderToFirestore,
   deleteReminderFromFirestore,
   saveWeightToFirestore,
   deleteWeightFromFirestore,
+  resetAllUserDataInFirestore,
 } from './services/firebaseSync';
 
 import { GlucoseChart } from './components/GlucoseChart';
@@ -115,6 +118,7 @@ import { SidebarDrawer, AppPageId } from './components/SidebarDrawer';
 import { DailyRoutineView } from './components/DailyRoutineView';
 import { ReportsClinicalView } from './components/ReportsClinicalView';
 import { AuthScreen } from './components/AuthScreen';
+import { ResetAllModal } from './components/ResetAllModal';
 
 function toLocalDateTimeInputString(date: Date = new Date()): string {
   const pad = (n: number) => String(n).padStart(2, '0');
@@ -151,40 +155,90 @@ export default function App() {
   });
   const [inAppToast, setInAppToast] = useState<{ title: string; body: string } | null>(null);
 
-  // Persistence state
+  // Persistence state (starts empty and strips any legacy sample IDs)
   const [readings, setReadings] = useState<GlucoseReading[]>(() => {
     const saved = localStorage.getItem('mg_readings');
-    return saved ? JSON.parse(saved) : getInitialReadings();
+    if (!saved) return getInitialReadings();
+    try {
+      const parsed = JSON.parse(saved) as GlucoseReading[];
+      return Array.isArray(parsed) ? parsed.filter((r) => !isLegacyDemoId(r.id)) : [];
+    } catch {
+      return [];
+    }
   });
 
   const [meals, setMeals] = useState<MealRecord[]>(() => {
     const saved = localStorage.getItem('mg_meals');
-    return saved ? JSON.parse(saved) : getInitialMeals();
+    if (!saved) return getInitialMeals();
+    try {
+      const parsed = JSON.parse(saved) as MealRecord[];
+      return Array.isArray(parsed) ? parsed.filter((m) => !isLegacyDemoId(m.id)) : [];
+    } catch {
+      return [];
+    }
   });
 
   const [doses, setDoses] = useState<InsulinDoseRecord[]>(() => {
     const saved = localStorage.getItem('mg_doses');
-    return saved ? JSON.parse(saved) : getInitialDoses();
+    if (!saved) return getInitialDoses();
+    try {
+      const parsed = JSON.parse(saved) as InsulinDoseRecord[];
+      return Array.isArray(parsed) ? parsed.filter((d) => !isLegacyDemoId(d.id)) : [];
+    } catch {
+      return [];
+    }
   });
 
   const [profile, setProfile] = useState<PatientProfile>(() => {
     const saved = localStorage.getItem('mg_profile');
-    return saved ? JSON.parse(saved) : DEFAULT_PATIENT_PROFILE;
+    if (!saved) return DEFAULT_PATIENT_PROFILE;
+    try {
+      const parsed = JSON.parse(saved) as PatientProfile;
+      if (parsed.name === 'Paciente Exemplo') parsed.name = 'Meu Perfil';
+      if (parsed.emergencyContactName === 'Dr. Lucas (Endocrinologista)') {
+        parsed.emergencyContactName = '';
+        parsed.emergencyContactPhone = '';
+      }
+      return parsed;
+    } catch {
+      return DEFAULT_PATIENT_PROFILE;
+    }
   });
 
   const [favorites, setFavorites] = useState<FavoriteMeal[]>(() => {
     const saved = localStorage.getItem('mg_favorites');
-    return saved ? JSON.parse(saved) : INITIAL_FAVORITE_MEALS;
+    if (!saved) return INITIAL_FAVORITE_MEALS;
+    try {
+      const parsed = JSON.parse(saved) as FavoriteMeal[];
+      return Array.isArray(parsed) ? parsed.filter((f) => !isLegacyDemoId(f.id)) : [];
+    } catch {
+      return [];
+    }
   });
 
   const [reminders, setReminders] = useState<ReminderItem[]>(() => {
     const saved = localStorage.getItem('mg_reminders');
-    return saved ? JSON.parse(saved) : INITIAL_REMINDERS;
+    if (!saved) return INITIAL_REMINDERS;
+    try {
+      const parsed = JSON.parse(saved) as ReminderItem[];
+      return Array.isArray(parsed) ? parsed.filter((r) => !isLegacyDemoId(r.id)) : [];
+    } catch {
+      return [];
+    }
   });
 
   const [fitnessData, setFitnessData] = useState<HealthFitnessSync>(() => {
     const saved = localStorage.getItem('mg_fitness');
-    return saved ? JSON.parse(saved) : INITIAL_FITNESS_DATA;
+    if (!saved) return INITIAL_FITNESS_DATA;
+    try {
+      const parsed = JSON.parse(saved) as HealthFitnessSync;
+      if (parsed.stepsToday === 7420 && parsed.exerciseMinutes === 45) {
+        return INITIAL_FITNESS_DATA;
+      }
+      return parsed;
+    } catch {
+      return INITIAL_FITNESS_DATA;
+    }
   });
 
   // Active navigation page
@@ -198,12 +252,20 @@ export default function App() {
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
+        // Strip legacy sample routine (1750ml + Caminhada aeróbica)
+        if (
+          parsed.waterMl === 1750 &&
+          parsed.exerciseType === 'Caminhada aeróbica' &&
+          parsed.footCheckNotes === 'Pele íntegra, sem feridas ou pontos de pressão.'
+        ) {
+          return getInitialRoutineLog();
+        }
         if (parsed.date === todayStr) return parsed;
         return {
           ...getInitialRoutineLog(),
           date: todayStr,
           waterGoalMl: parsed.waterGoalMl || 2500,
-          basalUnits: parsed.basalUnits || 22,
+          basalUnits: parsed.basalUnits || 0,
         };
       } catch (e) {
         return getInitialRoutineLog();
@@ -256,7 +318,13 @@ export default function App() {
   // Weight tracking state
   const [weights, setWeights] = useState<WeightRecord[]>(() => {
     const saved = localStorage.getItem('mg_weights');
-    return saved ? JSON.parse(saved) : getInitialWeights();
+    if (!saved) return getInitialWeights();
+    try {
+      const parsed = JSON.parse(saved) as WeightRecord[];
+      return Array.isArray(parsed) ? parsed.filter((w) => !isLegacyDemoId(w.id)) : [];
+    } catch {
+      return [];
+    }
   });
 
   // Modals state
@@ -265,6 +333,7 @@ export default function App() {
   const [isAiModalOpen, setIsAiModalOpen] = useState(false);
   const [isReportModalOpen, setIsReportModalOpen] = useState(false);
   const [isManualReadingModalOpen, setIsManualReadingModalOpen] = useState(false);
+  const [isResetAllModalOpen, setIsResetAllModalOpen] = useState(false);
 
   // Post meal 2h timer state
   const [isPostMealTimerActive, setIsPostMealTimerActive] = useState(false);
@@ -342,6 +411,17 @@ export default function App() {
       if (firebaseUser) {
         setIsGuest(false);
         localStorage.removeItem('mg_is_guest');
+
+        // If switching accounts or logging into a fresh account, reset local-only states
+        const lastUid = localStorage.getItem('mg_last_uid');
+        if (lastUid !== firebaseUser.uid) {
+          localStorage.setItem('mg_last_uid', firebaseUser.uid);
+          setFavorites([]);
+          setRoutineLog(getInitialRoutineLog());
+          setFitnessData(INITIAL_FITNESS_DATA);
+          setCurrentPlate([]);
+        }
+
         triggerToast(
           'Conta Firebase Conectada',
           `Sessão iniciada como ${firebaseUser.email || firebaseUser.displayName || 'Usuário'}. Dados sincronizados na nuvem.`
@@ -352,29 +432,20 @@ export default function App() {
           if (cloudData.profile) {
             setProfile(cloudData.profile);
           } else {
-            await saveProfileToFirestore(firebaseUser.uid, {
-              ...profile,
-              name: firebaseUser.displayName || profile.name,
-            });
+            const initialUserProfile: PatientProfile = {
+              ...DEFAULT_PATIENT_PROFILE,
+              name: firebaseUser.displayName || 'Meu Perfil',
+            };
+            setProfile(initialUserProfile);
+            await saveProfileToFirestore(firebaseUser.uid, initialUserProfile);
           }
 
-          if (cloudData.readings && cloudData.readings.length > 0) {
-            setReadings(cloudData.readings);
-          }
-          if (cloudData.meals && cloudData.meals.length > 0) {
-            setMeals(cloudData.meals);
-          }
-          if (cloudData.doses && cloudData.doses.length > 0) {
-            setDoses(cloudData.doses);
-          }
-          if (cloudData.reminders && cloudData.reminders.length > 0) {
-            setReminders(cloudData.reminders);
-          }
-          if (cloudData.weights && cloudData.weights.length > 0) {
-            setWeights(cloudData.weights);
-          } else if (weights.length > 0) {
-            weights.forEach((w) => saveWeightToFirestore(firebaseUser.uid, w));
-          }
+          // Always reflect the exact cloud state (empty arrays for new accounts!)
+          setReadings(cloudData.readings || []);
+          setMeals(cloudData.meals || []);
+          setDoses(cloudData.doses || []);
+          setReminders(cloudData.reminders || []);
+          setWeights(cloudData.weights || []);
         } catch (err) {
           console.error('Error syncing from Firestore on login:', err);
         }
@@ -383,6 +454,50 @@ export default function App() {
 
     return () => unsubscribe();
   }, []);
+
+  // Handle Reset All Data (2-Step Confirmed)
+  const handleResetAllData = async () => {
+    const cleanProfile: PatientProfile = {
+      ...DEFAULT_PATIENT_PROFILE,
+      name: currentUser?.displayName || profile.name || 'Meu Perfil',
+    };
+
+    // Clear all React states
+    setReadings([]);
+    setMeals([]);
+    setDoses([]);
+    setWeights([]);
+    setFavorites([]);
+    setReminders([]);
+    setCurrentPlate([]);
+    setFitnessData(INITIAL_FITNESS_DATA);
+    setRoutineLog(getInitialRoutineLog());
+    setProfile(cleanProfile);
+    setIsPostMealTimerActive(false);
+
+    // Clear localStorage
+    [
+      'mg_readings',
+      'mg_meals',
+      'mg_doses',
+      'mg_weights',
+      'mg_favorites',
+      'mg_reminders',
+      'mg_fitness',
+      'mg_routine_v2',
+    ].forEach((key) => localStorage.removeItem(key));
+    localStorage.setItem('mg_profile', JSON.stringify(cleanProfile));
+
+    // Delete all user documents in Firestore if logged in
+    if (currentUser) {
+      await resetAllUserDataInFirestore(currentUser.uid, cleanProfile);
+    }
+
+    triggerToast(
+      'Conta Zerada com Sucesso!',
+      'Todos os seus registros locais e na nuvem foram apagados. Você está começando do zero.'
+    );
+  };
 
   // Handle Google Login
   const handleGoogleLogin = async () => {
@@ -406,6 +521,16 @@ export default function App() {
       setCurrentUser(null);
       setIsGuest(false);
       localStorage.removeItem('mg_is_guest');
+      localStorage.removeItem('mg_last_uid');
+      // Reset local state on logout so another user on the same device starts clean
+      setReadings([]);
+      setMeals([]);
+      setDoses([]);
+      setWeights([]);
+      setFavorites([]);
+      setReminders([]);
+      setRoutineLog(getInitialRoutineLog());
+      setProfile(DEFAULT_PATIENT_PROFILE);
       setIsUserMenuOpen(false);
       triggerToast('Sessão Encerrada', 'Você saiu da sua conta. Seus dados estão seguros no Firebase.');
     } catch (err) {
@@ -578,15 +703,15 @@ export default function App() {
   const avgFasting =
     fastingReadings.length > 0
       ? Math.round(fastingReadings.reduce((a, b) => a + b.value, 0) / fastingReadings.length)
-      : 104;
+      : 0;
   const avgPostMeal =
     postMealReadings.length > 0
       ? Math.round(postMealReadings.reduce((a, b) => a + b.value, 0) / postMealReadings.length)
-      : 142;
+      : 0;
   const avgDawn =
     dawnReadings.length > 0
       ? Math.round(dawnReadings.reduce((a, b) => a + b.value, 0) / dawnReadings.length)
-      : 112;
+      : 0;
 
   // Custom reminder creation handler
   const handleCreateCustomReminder = (e: React.FormEvent) => {
@@ -853,7 +978,7 @@ export default function App() {
 
   // Daily routine completion calculation
   const routineGoalsDone = [
-    true,
+    Boolean(latestReading),
     routineLog.basalTaken,
     routineLog.waterMl >= routineLog.waterGoalMl,
     routineLog.exerciseMinutes > 0,
@@ -1030,6 +1155,16 @@ export default function App() {
                       <span>Cadastrar Nova Conta</span>
                     </button>
                     <button
+                      onClick={() => {
+                        setIsUserMenuOpen(false);
+                        setIsResetAllModalOpen(true);
+                      }}
+                      className="w-full text-left px-3 py-2 rounded-xl text-xs font-semibold text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 flex items-center gap-2"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>Zerar Tudo (2 Etapas)</span>
+                    </button>
+                    <button
                       onClick={handleLogout}
                       className="w-full text-left px-3 py-2 rounded-xl text-xs font-semibold text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 flex items-center gap-2"
                     >
@@ -1156,22 +1291,33 @@ export default function App() {
                   </p>
                 </div>
 
-                {/* Resumo Rápido das Metas com Atalho para a Rotina */}
-                <div
-                  onClick={() => setActivePage('routine')}
-                  className="flex items-center gap-3.5 bg-[#F6F6F7] dark:bg-[#222226] p-3 sm:px-4 rounded-2xl cursor-pointer hover:ring-1 hover:ring-[#FF5A36]/40 transition shrink-0"
-                >
-                  <div className="w-10 h-10 rounded-full border-3 border-[#FF5A36] flex items-center justify-center font-mono font-extrabold text-xs text-[#111111] dark:text-white">
-                    {routinePct}%
+                {/* Resumo Rápido das Metas com Atalho para a Rotina + Botão Zerar Tudo */}
+                <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+                  <div
+                    onClick={() => setActivePage('routine')}
+                    className="flex items-center gap-3.5 bg-[#F6F6F7] dark:bg-[#222226] p-3 sm:px-4 rounded-2xl cursor-pointer hover:ring-1 hover:ring-[#FF5A36]/40 transition shrink-0"
+                  >
+                    <div className="w-10 h-10 rounded-full border-3 border-[#FF5A36] flex items-center justify-center font-mono font-extrabold text-xs text-[#111111] dark:text-white">
+                      {routinePct}%
+                    </div>
+                    <div>
+                      <span className="text-xs font-bold text-[#111111] dark:text-white block">
+                        Rotina Diária
+                      </span>
+                      <span className="text-[11px] text-[#FF5A36] font-semibold flex items-center gap-1">
+                        Ver Metas de Hoje →
+                      </span>
+                    </div>
                   </div>
-                  <div>
-                    <span className="text-xs font-bold text-[#111111] dark:text-white block">
-                      Rotina Diária
-                    </span>
-                    <span className="text-[11px] text-[#FF5A36] font-semibold flex items-center gap-1">
-                      Ver Metas de Hoje →
-                    </span>
-                  </div>
+
+                  <button
+                    onClick={() => setIsResetAllModalOpen(true)}
+                    className="px-3.5 py-3 rounded-2xl bg-red-500/10 hover:bg-red-500/20 text-red-600 dark:text-red-400 text-xs font-bold flex items-center gap-1.5 transition shrink-0"
+                    title="Zerar todos os dados da conta com confirmação em 2 etapas"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Zerar Tudo</span>
+                  </button>
                 </div>
               </div>
 
@@ -1280,63 +1426,77 @@ export default function App() {
                   </div>
 
                   {/* Vertical Stem / Lollipop Chart with Coral Callout Bubble */}
-                  <div className="relative h-40 pt-8 pb-2 px-2 flex items-end justify-between gap-2">
-                    {stemReadings.map((r, idx) => {
-                      const heightPct = Math.max(25, Math.min(95, Math.round(((r.value - 50) / 220) * 100)));
-                      const isSelected = idx === safeSelectedStem;
-                      const labelText = getGlucoseContextLabel(r.context).split(' ')[0];
-                      return (
-                        <div
-                          key={r.id}
-                          onClick={() => setSelectedStemIdx(idx)}
-                          className="flex-1 flex flex-col items-center justify-end h-full cursor-pointer group relative"
-                        >
-                          {/* Floating Coral-Orange Callout Pill on Selected Stem */}
-                          {isSelected && (
-                            <div className="absolute -top-7 left-1/2 -translate-x-1/2 z-10 bg-[#FF5A36] text-white text-[11px] font-mono font-bold px-2.5 py-1 rounded-full shadow-md whitespace-nowrap">
-                              {r.value} mg/dL
-                            </div>
-                          )}
-
-                          {/* Stem Line */}
+                  {stemReadings.length === 0 ? (
+                    <div className="h-40 flex flex-col items-center justify-center text-center gap-2 px-4">
+                      <p className="text-xs text-neutral-400">
+                        Nenhuma medição registrada ainda.
+                      </p>
+                      <button
+                        onClick={() => setIsManualReadingModalOpen(true)}
+                        className="px-3.5 py-1.5 rounded-full bg-[#FF5A36] text-white text-[11px] font-bold hover:bg-[#e84c29] transition"
+                      >
+                        + Registrar 1ª Medição
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="relative h-40 pt-8 pb-2 px-2 flex items-end justify-between gap-2">
+                      {stemReadings.map((r, idx) => {
+                        const heightPct = Math.max(25, Math.min(95, Math.round(((r.value - 50) / 220) * 100)));
+                        const isSelected = idx === safeSelectedStem;
+                        const labelText = getGlucoseContextLabel(r.context).split(' ')[0];
+                        return (
                           <div
-                            style={{ height: `${heightPct}%` }}
-                            className={`w-[2px] relative flex flex-col items-center justify-between transition-all duration-200 ${
-                              isSelected
-                                ? 'bg-[#FF5A36]'
-                                : 'bg-[#111111] dark:bg-neutral-400 group-hover:bg-[#FF5A36]'
-                            }`}
+                            key={r.id}
+                            onClick={() => setSelectedStemIdx(idx)}
+                            className="flex-1 flex flex-col items-center justify-end h-full cursor-pointer group relative"
                           >
-                            {/* Top Dot */}
-                            <span
-                              className={`w-2.5 h-2.5 rounded-full -mt-1 ${
-                                isSelected
-                                  ? 'bg-[#FF5A36] ring-4 ring-[#FF5A36]/20'
-                                  : 'bg-[#111111] dark:bg-white'
-                              }`}
-                            />
-                            {/* Mid Dot */}
-                            <span
-                              className={`w-2 h-2 rounded-full ${
-                                isSelected ? 'bg-[#FF5A36]' : 'bg-[#111111] dark:bg-neutral-300'
-                              }`}
-                            />
-                          </div>
+                            {/* Floating Coral-Orange Callout Pill on Selected Stem */}
+                            {isSelected && (
+                              <div className="absolute -top-7 left-1/2 -translate-x-1/2 z-10 bg-[#FF5A36] text-white text-[11px] font-mono font-bold px-2.5 py-1 rounded-full shadow-md whitespace-nowrap">
+                                {r.value} mg/dL
+                              </div>
+                            )}
 
-                          {/* Bottom Moment / Time Label */}
-                          <span
-                            className={`text-[10px] mt-2 font-medium truncate max-w-[48px] ${
-                              isSelected
-                                ? 'text-[#111111] dark:text-white font-bold'
-                                : 'text-neutral-400'
-                            }`}
-                          >
-                            {labelText}
-                          </span>
-                        </div>
-                      );
-                    })}
-                  </div>
+                            {/* Stem Line */}
+                            <div
+                              style={{ height: `${heightPct}%` }}
+                              className={`w-[2px] relative flex flex-col items-center justify-between transition-all duration-200 ${
+                                isSelected
+                                  ? 'bg-[#FF5A36]'
+                                  : 'bg-[#111111] dark:bg-neutral-400 group-hover:bg-[#FF5A36]'
+                              }`}
+                            >
+                              {/* Top Dot */}
+                              <span
+                                className={`w-2.5 h-2.5 rounded-full -mt-1 ${
+                                  isSelected
+                                    ? 'bg-[#FF5A36] ring-4 ring-[#FF5A36]/20'
+                                    : 'bg-[#111111] dark:bg-white'
+                                }`}
+                              />
+                              {/* Mid Dot */}
+                              <span
+                                className={`w-2 h-2 rounded-full ${
+                                  isSelected ? 'bg-[#FF5A36]' : 'bg-[#111111] dark:bg-neutral-300'
+                                }`}
+                              />
+                            </div>
+
+                            {/* Bottom Moment / Time Label */}
+                            <span
+                              className={`text-[10px] mt-2 font-medium truncate max-w-[48px] ${
+                                isSelected
+                                  ? 'text-[#111111] dark:text-white font-bold'
+                                  : 'text-neutral-400'
+                              }`}
+                            >
+                              {labelText}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
 
                 {/* CARD 3: Ação Rápida (Quick Deal Style - lg:col-span-2) */}
@@ -1734,7 +1894,7 @@ export default function App() {
                   <div className="bg-[#F6F6F7] dark:bg-[#222226] rounded-full py-2.5 px-4 text-center">
                     <span className="text-[#FF5A36] font-bold text-sm mr-1">mg/dL</span>
                     <span className="font-mono text-xl font-extrabold text-[#111111] dark:text-white tabular-nums">
-                      {latestReading ? latestReading.value : 110}
+                      {latestReading ? latestReading.value : 0}
                     </span>
                   </div>
                 </div>
@@ -1971,7 +2131,10 @@ export default function App() {
                     </div>
 
                     <button
-                      onClick={() => setReadings(readings.filter((it) => it.id !== r.id))}
+                      onClick={() => {
+                        setReadings(readings.filter((it) => it.id !== r.id));
+                        if (currentUser) deleteReadingFromFirestore(currentUser.uid, r.id);
+                      }}
                       className="text-neutral-400 hover:text-red-600 p-2 rounded-full shrink-0"
                       title="Excluir"
                     >
@@ -2049,7 +2212,10 @@ export default function App() {
                           </td>
                           <td className="p-3.5 text-right">
                             <button
-                              onClick={() => setReadings(readings.filter((it) => it.id !== r.id))}
+                              onClick={() => {
+                                setReadings(readings.filter((it) => it.id !== r.id));
+                                if (currentUser) deleteReadingFromFirestore(currentUser.uid, r.id);
+                              }}
                               className="text-neutral-400 hover:text-red-600 p-1.5 rounded-full"
                             >
                               <Trash2 className="w-4 h-4" />
@@ -3124,6 +3290,28 @@ export default function App() {
                   Salvar Parâmetros
                 </button>
               </div>
+
+              {/* Zona de Redefinição / Zerar Tudo com Confirmação em 2 Etapas */}
+              <div className="bg-white dark:bg-[#161619] rounded-[28px] p-5 sm:p-6 shadow-[0_4px_24px_rgba(0,0,0,0.03)] border border-red-500/20 space-y-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <h4 className="font-extrabold text-sm text-red-600 dark:text-red-400 flex items-center gap-2">
+                      <Trash2 className="w-4 h-4" />
+                      <span>Zerar Tudo e Recomeçar do Zero</span>
+                    </h4>
+                    <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-1">
+                      Apaga todas as medições de glicemia, refeições, doses de insulina, pesos, lembretes e rotina (com confirmação de segurança em duas etapas).
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setIsResetAllModalOpen(true)}
+                  className="w-full sm:w-auto px-5 py-2.5 bg-red-600 hover:bg-red-700 text-white font-bold text-xs rounded-full transition flex items-center justify-center gap-2 shadow-xs"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Zerar Tudo (Confirmação em 2 Etapas)</span>
+                </button>
+              </div>
             </motion.div>
           )}
 
@@ -3294,6 +3482,7 @@ export default function App() {
         onOpenBluetooth={() => setIsBluetoothModalOpen(true)}
         onOpenReportModal={() => setIsReportModalOpen(true)}
         onOpenManualReading={() => setIsManualReadingModalOpen(true)}
+        onOpenResetAll={() => setIsResetAllModalOpen(true)}
       />
 
       {/* ============================================================== */}
@@ -3523,6 +3712,21 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* Two-Step Confirmation Modal to Reset All Data */}
+      <ResetAllModal
+        isOpen={isResetAllModalOpen}
+        onClose={() => setIsResetAllModalOpen(false)}
+        onConfirmResetAll={handleResetAllData}
+        counts={{
+          readings: readings.length,
+          meals: meals.length,
+          doses: doses.length,
+          weights: weights.length,
+          reminders: reminders.length,
+        }}
+        isCloudConnected={Boolean(currentUser)}
+      />
     </div>
   );
 }
