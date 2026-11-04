@@ -1,17 +1,45 @@
 import { useEffect, useState } from 'react';
 
-interface BeforeInstallPromptEvent extends Event {
+export interface BeforeInstallPromptEvent extends Event {
   prompt: () => Promise<void>;
   userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>;
 }
 
+// Module-level prompt cache so the event is NEVER lost if it fired before React components mount
+let cachedPromptEvent: BeforeInstallPromptEvent | null = null;
+const promptListeners = new Set<(e: BeforeInstallPromptEvent | null) => void>();
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('beforeinstallprompt', (e) => {
+    // Prevent standard browser mini-infobar to control prompt timing
+    e.preventDefault();
+    cachedPromptEvent = e as BeforeInstallPromptEvent;
+    promptListeners.forEach((listener) => listener(cachedPromptEvent));
+  });
+
+  window.addEventListener('appinstalled', () => {
+    cachedPromptEvent = null;
+    promptListeners.forEach((listener) => listener(null));
+  });
+}
+
 export function usePWAInstall() {
-  const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(null);
-  const [isInstalled, setIsInstalled] = useState(false);
-  const [isIOS, setIsIOS] = useState(false);
+  const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(
+    () => cachedPromptEvent
+  );
+  const [isInstalled, setIsInstalled] = useState<boolean>(false);
+  const [isIOS, setIsIOS] = useState<boolean>(false);
+  const [isInIframe, setIsInIframe] = useState<boolean>(false);
 
   useEffect(() => {
-    // Detect standalone mode (already installed or launched from home screen)
+    // Check if running inside iframe (browser blocks PWA install from iframes)
+    try {
+      setIsInIframe(window.self !== window.top);
+    } catch {
+      setIsInIframe(true);
+    }
+
+    // Detect standalone mode (already running as installed PWA on home screen or desktop)
     const isStandalone =
       window.matchMedia('(display-mode: standalone)').matches ||
       (window.navigator as unknown as { standalone?: boolean }).standalone === true;
@@ -19,44 +47,46 @@ export function usePWAInstall() {
 
     // Detect iOS devices
     const userAgent = window.navigator.userAgent.toLowerCase();
-    const isIOSDevice = /iphone|ipad|ipod/.test(userAgent);
+    const isIOSDevice = /iphone|ipad|ipod/.test(userAgent) && !(window as any).MSStream;
     setIsIOS(isIOSDevice);
 
-    const handleBeforeInstallPrompt = (e: Event) => {
-      e.preventDefault();
-      setDeferredPrompt(e as BeforeInstallPromptEvent);
+    const listener = (event: BeforeInstallPromptEvent | null) => {
+      setDeferredPrompt(event);
     };
 
-    const handleAppInstalled = () => {
-      setIsInstalled(true);
-      setDeferredPrompt(null);
-    };
-
-    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
-    window.addEventListener('appinstalled', handleAppInstalled);
+    promptListeners.add(listener);
 
     return () => {
-      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
-      window.removeEventListener('appinstalled', handleAppInstalled);
+      promptListeners.delete(listener);
     };
   }, []);
 
-  const install = async () => {
-    if (!deferredPrompt) return false;
-    await deferredPrompt.prompt();
-    const { outcome } = await deferredPrompt.userChoice;
-    if (outcome === 'accepted') {
-      setIsInstalled(true);
-      setDeferredPrompt(null);
-      return true;
+  const install = async (): Promise<'accepted' | 'dismissed' | 'unsupported'> => {
+    if (!deferredPrompt) {
+      return 'unsupported';
     }
-    return false;
+
+    try {
+      await deferredPrompt.prompt();
+      const choice = await deferredPrompt.userChoice;
+      if (choice.outcome === 'accepted') {
+        setIsInstalled(true);
+        cachedPromptEvent = null;
+        setDeferredPrompt(null);
+        return 'accepted';
+      }
+      return 'dismissed';
+    } catch (err) {
+      console.warn('[PWA] Prompt execution error:', err);
+      return 'unsupported';
+    }
   };
 
   return {
     isInstallable: !!deferredPrompt,
     isInstalled,
     isIOS,
+    isInIframe,
     install,
   };
 }
