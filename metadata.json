@@ -1,0 +1,6 @@
+{
+  "name": "Minha Glico",
+  "description": "Ecossistema clínico integrado para monitoramento de glicose, controle de refeições com IA, contagem de carboidratos, calculadora de bolus de insulina e relatórios médicos.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

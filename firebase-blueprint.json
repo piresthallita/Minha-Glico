@@ -1,0 +1,130 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Configurações clínicas, metas e parâmetros do paciente",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 100 },
+        "email": { "type": "string", "maxLength": 150 },
+        "heightCm": { "type": "number" },
+        "diabetesType": { "type": "string", "maxLength": 30 },
+        "targetBg": { "type": "number" },
+        "targetRangeLow": { "type": "number" },
+        "targetRangeHigh": { "type": "number" },
+        "icrMorning": { "type": "number" },
+        "icrAfternoon": { "type": "number" },
+        "icrNight": { "type": "number" },
+        "isf": { "type": "number" },
+        "diaHours": { "type": "number" },
+        "rapidInsulinName": { "type": "string", "maxLength": 100 },
+        "basalInsulinName": { "type": "string", "maxLength": 100 },
+        "createdAt": { "type": "string", "maxLength": 64 },
+        "updatedAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["userId", "name"]
+    },
+    "GlucoseReading": {
+      "title": "GlucoseReading",
+      "description": "Registro de medição capilar ou contínua de glicemia",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "maxLength": 128 },
+        "value": { "type": "number" },
+        "context": { "type": "string", "maxLength": 40 },
+        "timestamp": { "type": "string", "maxLength": 64 },
+        "notes": { "type": "string", "maxLength": 500 },
+        "trend": { "type": "string", "maxLength": 30 },
+        "isCgm": { "type": "boolean" }
+      },
+      "required": ["userId", "value", "timestamp"]
+    },
+    "MealRecord": {
+      "title": "MealRecord",
+      "description": "Registro de refeição com macronutrientes",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "maxLength": 128 },
+        "title": { "type": "string", "maxLength": 150 },
+        "mealType": { "type": "string", "maxLength": 40 },
+        "timestamp": { "type": "string", "maxLength": 64 },
+        "totalCarbs": { "type": "number" },
+        "totalProtein": { "type": "number" },
+        "totalFat": { "type": "number" },
+        "totalCalories": { "type": "number" },
+        "aiAnalysisNotes": { "type": "string", "maxLength": 1000 }
+      },
+      "required": ["userId", "title", "totalCarbs", "timestamp"]
+    },
+    "InsulinDoseRecord": {
+      "title": "InsulinDoseRecord",
+      "description": "Registro de aplicação de insulina rápida ou basal",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "maxLength": 128 },
+        "type": { "type": "string", "maxLength": 30 },
+        "insulinName": { "type": "string", "maxLength": 100 },
+        "units": { "type": "number" },
+        "injectionSite": { "type": "string", "maxLength": 60 },
+        "timestamp": { "type": "string", "maxLength": 64 },
+        "notes": { "type": "string", "maxLength": 500 }
+      },
+      "required": ["userId", "type", "units", "timestamp"]
+    },
+    "ReminderItem": {
+      "title": "ReminderItem",
+      "description": "Lembrete programado para glicemia ou medicação",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "maxLength": 128 },
+        "title": { "type": "string", "maxLength": 150 },
+        "timeString": { "type": "string", "maxLength": 10 },
+        "type": { "type": "string", "maxLength": 40 },
+        "enabled": { "type": "boolean" },
+        "notes": { "type": "string", "maxLength": 300 }
+      },
+      "required": ["userId", "title", "timeString"]
+    },
+    "WeightRecord": {
+      "title": "WeightRecord",
+      "description": "Registro de peso e IMC correlacionado ao controle glicêmico",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "maxLength": 128 },
+        "weightKg": { "type": "number" },
+        "heightCm": { "type": "number" },
+        "bmi": { "type": "number" },
+        "timestamp": { "type": "string", "maxLength": 64 },
+        "notes": { "type": "string", "maxLength": 500 }
+      },
+      "required": ["userId", "weightKg", "timestamp"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "Documento de perfil e preferências do usuário autenticado"
+    },
+    "/users/{userId}/readings/{readingId}": {
+      "schema": "GlucoseReading",
+      "description": "Leituras de glicose do usuário"
+    },
+    "/users/{userId}/meals/{mealId}": {
+      "schema": "MealRecord",
+      "description": "Refeições e registros nutricionais do usuário"
+    },
+    "/users/{userId}/doses/{doseId}": {
+      "schema": "InsulinDoseRecord",
+      "description": "Histórico de doses de insulina aplicadas pelo usuário"
+    },
+    "/users/{userId}/reminders/{reminderId}": {
+      "schema": "ReminderItem",
+      "description": "Lembretes programados de glicose e insulina do usuário"
+    },
+    "/users/{userId}/weights/{weightId}": {
+      "schema": "WeightRecord",
+      "description": "Registros de peso e cálculo de IMC para correlação clínica"
+    }
+  }
+}

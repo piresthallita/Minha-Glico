@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1e3a8a" />
+      <stop offset="50%" stop-color="#2563eb" />
+      <stop offset="100%" stop-color="#0284c7" />
+    </linearGradient>
+    <linearGradient id="dropGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ef4444" />
+      <stop offset="60%" stop-color="#dc2626" />
+      <stop offset="100%" stop-color="#991b1b" />
+    </linearGradient>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="12" stdDeviation="16" flood-color="#000000" flood-opacity="0.35" />
+    </filter>
+  </defs>
+
+  <!-- Background rounded rect -->
+  <rect width="512" height="512" rx="112" fill="url(#bgGrad)" />
+
+  <!-- Outer subtle circular ring -->
+  <circle cx="256" cy="256" r="190" fill="none" stroke="#60a5fa" stroke-width="6" stroke-dasharray="16 12" opacity="0.4" />
+
+  <!-- Glucose Drop Shadow & Body -->
+  <path d="M 256 90 C 256 90 144 240 144 326 C 144 388 194 438 256 438 C 318 438 368 388 368 326 C 368 240 256 90 256 90 Z" 
+        fill="url(#dropGrad)" 
+        filter="url(#glow)" />
+
+  <!-- Inner Gloss Highlight on Drop -->
+  <path d="M 256 125 C 256 125 174 246 174 316 C 174 336 182 355 195 370 C 185 348 180 326 186 304 C 196 264 238 184 256 125 Z" 
+        fill="#ffffff" 
+        opacity="0.3" />
+
+  <!-- ECG / Glucose Pulse Line -->
+  <path d="M 180 330 L 214 330 L 232 285 L 256 368 L 278 305 L 296 330 L 332 330" 
+        fill="none" 
+        stroke="#ffffff" 
+        stroke-width="12" 
+        stroke-linecap="round" 
+        stroke-linejoin="round" />
+
+  <!-- Little Center Glucose Sparkle Dot -->
+  <circle cx="256" cy="368" r="7" fill="#fef08a" />
+</svg>

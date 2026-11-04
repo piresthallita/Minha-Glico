@@ -1,0 +1,48 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    // Default deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // User profile document
+    match /users/{userId} {
+      allow read, write: if isOwner(userId);
+
+      // Readings subcollection
+      match /readings/{readingId} {
+        allow read, write: if isOwner(userId);
+      }
+
+      // Meals subcollection
+      match /meals/{mealId} {
+        allow read, write: if isOwner(userId);
+      }
+
+      // Insulin doses subcollection
+      match /doses/{doseId} {
+        allow read, write: if isOwner(userId);
+      }
+
+      // Reminders subcollection
+      match /reminders/{reminderId} {
+        allow read, write: if isOwner(userId);
+      }
+
+      // Weight and BMI tracking subcollection
+      match /weights/{weightId} {
+        allow read, write: if isOwner(userId);
+      }
+    }
+  }
+}
